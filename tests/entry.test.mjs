@@ -307,3 +307,30 @@ test('scope paths match their real location, even before the folder exists', asy
   if (process.platform === 'darwin') assert.ok(cfg.capture.includeCwd.includes(`/private/tmp/${name}`))
 })
 
+test('run-now refuses while a curation is already running', async () => {
+  apply(host.ctx, { memoryRoot: root, skills: { linkTargets: [join(root, 'links')] } })
+  await settle(300)
+  const route = host.routes[0]
+  const call = async (action, body) => {
+    const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
+    Object.assign(req, { method: 'POST', url: `${ROUTE}/${action}`, headers: { host: '127.0.0.1:9', 'content-type': 'application/json' } })
+    let payload = ''
+    const res = { statusCode: 0, setHeader() {}, end(text) { payload = text } }
+    await route.handler(req, res)
+    return { status: res.statusCode, body: JSON.parse(payload) }
+  }
+  // 模拟整理进行中：直接写 kv
+  const store = host.ctx
+  const engine = await import('../lib/engine.js').then(() => null).catch(() => null)
+  // 通过打开的 graph 写：用路由触发太重，直接从插件侧拿不到句柄——用 sqlite
+  const { openGraph } = await import('../lib/graph.js')
+  const g = await openGraph(join(root, 'meta', 'graph.sqlite'))
+  g.set('runStartedAt', Date.now() - 60_000)
+  g.close()
+  const refused = await call('run-now', {})
+  assert.equal(refused.status, 409)
+  assert.equal(refused.body.code, 'ALREADY_RUNNING')
+  const cleared = await call('scan', {})
+  assert.equal(cleared.status, 200)
+})
+
