@@ -43,5 +43,22 @@ test('every tool result passes the host lossless check (undefined properties are
   assert.ok(bad.code, 'expected a gate refusal')
   assert.ok(isJsonValue({ ok: false, code: bad.code, detail: bad.detail }), 'refusal value is not lossless')
 
+  // 5) a session whose FIRST message is a correction (no assistant reply yet):
+  //    the hint's replyTo must be omitted, not undefined.
+  {
+    const first = { type: 'turn/start', seq: 1, time: Date.now(), data: {} }
+    const correction = { type: 'user/message', seq: 2, time: Date.now(), data: { content: [{ type: 'text', text: '不对，那条记错了，应该是 X' }], source: { kind: 'user' } } }
+    const reply = { type: 'assistant/message', seq: 3, time: Date.now(), data: { message: { role: 'assistant', content: [{ type: 'text', text: '好的已更正' }] } } }
+    const end = { type: 'turn/end', seq: 4, time: Date.now(), data: {} }
+    const { digestSession } = await import('../lib/digest.js')
+    const digest = digestSession([first, correction, reply, end], {})
+    const { isJsonValue } = await import('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-util-values/lib/index.js')
+    // corrections feed the session unit's hints; every entry must be lossless.
+    for (const correction of digest.corrections) {
+      assert.ok(isJsonValue(correction), `a correction entry is not lossless: ${JSON.stringify(correction, (k, v) => v === undefined ? '__UNDEF__' : v)}`)
+    }
+    assert.equal(digest.corrections.length, 0, 'a correction before any assistant reply has no replyTo, so it is not flagged')
+  }
+
   store.close(); rmSync(root, { recursive: true, force: true })
 })
