@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Memory knowledge base",
+    "description": "Long-term memory that keeps only worked-out conclusions, as plain Markdown in a folder tree linked by a relation graph. DSH's own agent curates conversations nightly: new entries wait in staging and are promoted once cited in other sessions without objection. Files you edit are protected and treated as corrections. Answers that use a memory cite it with a clickable link.",
+    "detail": "docs/DETAIL.md"
+  }
+}

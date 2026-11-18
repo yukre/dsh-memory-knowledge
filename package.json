@@ -1,0 +1,64 @@
+{
+  "name": "dsh-memory-knowledge",
+  "version": "0.1.0",
+  "description": "Long-term memory knowledge base for DeepSeek Harness: plain Markdown memories in a folder tree, a relation graph, nightly curation by DSH's own agent, and clickable citations.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:dsh": "ELECTRON_RUN_AS_NODE=1 \"/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness\" --import ./tests/support/dsh-resolve.mjs --test tests/*.test.mjs"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "knowledge-base",
+    "long-term-memory"
+  ],
+  "author": "yukre",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yukre/dsh-memory-knowledge.git"
+  },
+  "homepage": "https://github.com/yukre/dsh-memory-knowledge#readme",
+  "bugs": {
+    "url": "https://github.com/yukre/dsh-memory-knowledge/issues"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  }
+}

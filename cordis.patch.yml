@@ -1,0 +1,16 @@
+# dsh-memory-knowledge bundle patch: inserts the Host row into the profile's roster.
+# The bundle patch is applied automatically on install, so do NOT insert this
+# row again in the profile patch (duplicate ids crash the loader).
+#
+# Settings of the plugin row (every field has a default; see lib/config.js):
+#   memoryRoot      plugin data root; empty = <DSH home>/memory-knowledge
+#   injectTag       tag name wrapping the session snapshot (letters, digits, - and _)
+#   curator         nightly curation: enabled, agentPreset, budgets
+#   capture         which sessions the curator may read (includeCwd / excludeCwd)
+#   recall          result count and snippet length of mk_recall
+#   pools           promotion threshold and staging expiry
+#   skills          skill output cap and link targets
+- insert:
+    - id: dsh-memory-knowledge
+      name: 'dsh-memory-knowledge'
+      config: {}

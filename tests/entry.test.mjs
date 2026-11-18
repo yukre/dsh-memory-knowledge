@@ -1,0 +1,236 @@
+/**
+ * The Host entry against a fake context that mirrors the real contracts:
+ * scoped `agent.ctx.inject`, `systemPrompt.section`, `tools.register/restrict`,
+ * `schedule` create/view/edit, `webServer.register`, events.
+ *
+ * Real-host behavior is verified separately after installation; this guards the
+ * wiring so a regression fails here first.
+ */
+import { test, beforeEach, afterEach } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, lstatSync, readlinkSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Readable } from 'node:stream'
+import { apply, sameOriginViolation, mergeConfig, ROUTE } from '../lib/index.js'
+import { SCHEDULE_PROMPT, SCHEDULE_TITLE } from '../lib/prompt.js'
+
+// Tool registration needs the real @deepseek-ai/dsh-tools (DSH host, or the
+// resolve hook in tests/support). Without it, that one test is skipped, loudly.
+let toolsAvailable = true
+try { await import('@deepseek-ai/dsh-tools') } catch { toolsAvailable = false }
+const withTools = toolsAvailable ? test : test.skip
+
+let root
+let host
+
+/** Wait for queued timers and promises. */
+const settle = (ms = 30) => new Promise(resolve => setTimeout(resolve, ms))
+
+/** A fake host whose services record what the plugin did. */
+function makeHost() {
+  const listeners = new Map()
+  const effects = []
+  const sections = []
+  const restrictions = []
+  const tools = new Map()
+  const schedules = new Map()
+  const routes = []
+  const workspaces = []
+  let nextSchedule = 1
+  const schedule = {
+    calls: [],
+    async create(request) {
+      const id = `schedule-${nextSchedule++}`
+      const entry = { id, ...request, status: 'active', target: request.target }
+      schedules.set(id, entry)
+      this.calls.push(['create', request])
+      return entry
+    },
+    async view({ id }) {
+      return schedules.get(id) ?? { id, code: 'schedule_not_found' }
+    },
+    async edit(request) {
+      this.calls.push(['edit', request])
+      if (request.action === 'delete') { schedules.delete(request.id); return { id: request.id, deleted: true } }
+      const entry = { ...schedules.get(request.id), ...request.patch }
+      schedules.set(request.id, entry)
+      return entry
+    },
+    async run({ id }) { return schedules.get(id) },
+  }
+  const ctx = {
+    logger: { info() {}, warn(message) { ctx.warnings.push(message) } },
+    warnings: [],
+    effect(fn) { const dispose = fn(); effects.push(dispose); return dispose },
+    on(name, fn) { listeners.set(name, [...(listeners.get(name) ?? []), fn]); return () => {} },
+    emit(name, payload) { return Promise.all((listeners.get(name) ?? []).map(fn => fn(payload))) },
+    get(name) {
+      return {
+        schedule,
+        sessionQuery: { async listSessions() { return [] }, async readSession() { return { events: [] } }, async readTitle() { return { title: '' } } },
+        workspaceRegistry: { async resolveByPath(path) { return workspaces.find(w => w.path === path) }, async create(path, title) { const w = { path, title }; workspaces.push(w); return w } },
+        sandboxPolicy: { registerWritableRoot() { return () => {} } },
+      }[name]
+    },
+    inject(names, fn) { if (names.includes('webServer')) fn({ ...ctx, webServer: { register(route) { routes.push(route); return () => {} } } }) },
+    tools: { register(definition, options = {}) { tools.set(definition.name, { definition, options }); return () => tools.delete(definition.name) } },
+    agents: { list() { return [] } },
+  }
+  return { ctx, listeners, effects, sections, restrictions, tools, schedule, schedules, routes, workspaces }
+}
+
+/** A fake agent whose scoped context records sections and restrictions. */
+function makeAgent(h, header) {
+  const agent = {
+    id: header.id,
+    session: { id: header.id, header },
+    ctx: {
+      inject(names, fn) {
+        fn({
+          systemPrompt: { section(section) { h.sections.push({ agent: header.id, ...section }); return () => {} } },
+          tools: {
+            restrict(filter) { h.restrictions.push({ agent: header.id, filter }); return () => {} },
+            get(name) { return ['read', 'glob', 'grep', 'bash'].includes(name) ? { name } : undefined },
+          },
+        })
+        return { dispose: async () => {} }
+      },
+    },
+  }
+  return agent
+}
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'mk-entry-'))
+  host = makeHost()
+})
+
+afterEach(async () => {
+  for (const dispose of host.effects) { try { dispose?.() } catch { /* ignore */ } }
+  await settle(10)
+  rmSync(root, { recursive: true, force: true })
+})
+
+withTools('registers three day tools and seven curator tools with visibility rules', async () => {
+  apply(host.ctx, { memoryRoot: root, skills: { linkTargets: [join(root, 'links')] } })
+  await settle(200)
+  const names = [...host.tools.keys()].sort()
+  assert.deepEqual(names, ['mk_done', 'mk_excerpt', 'mk_feedback', 'mk_import', 'mk_next', 'mk_recall', 'mk_remember', 'mk_status', 'mk_undo', 'mk_write'])
+  const day = makeAgent(host, { id: 's-day', cwd: '/tmp/mk-acceptance' })
+  const curator = makeAgent(host, { id: 's-cur', cwd: join(root, 'workspace') })
+  const sub = makeAgent(host, { id: 's-sub', cwd: '/tmp/mk-acceptance', origin: 'subagent', delegationDepth: 1 })
+  const visible = agent => [...host.tools.values()].filter(({ options }) => options.when === undefined || options.when({ agent })).map(({ definition }) => definition.name).sort()
+  assert.deepEqual(visible(day), ['mk_feedback', 'mk_recall', 'mk_remember'])
+  assert.equal(visible(curator).length, 10)
+  assert.deepEqual(visible(sub), ['mk_recall'], 'sub-agents only recall')
+})
+
+test('the snapshot is frozen per agent and the curator gets protocol + restriction', async () => {
+  apply(host.ctx, { memoryRoot: root, skills: { linkTargets: [join(root, 'links')] } })
+  await settle(200)
+  const day = makeAgent(host, { id: 's-day', cwd: '/tmp/mk-acceptance' })
+  await host.ctx.emit('agent/created', { agent: day })
+  const section = host.sections.find(s => s.agent === 's-day')
+  assert.equal(section.name, 'dsh-memory-knowledge:snapshot')
+  assert.equal(section.order, 3200)
+  assert.equal(section.interpolate, false)
+  const first = section.text()
+  assert.match(first, /^<dmk>/)
+  assert.match(first, /<\/dmk>$/)
+  // A new category appears after the session started: the snapshot must not change.
+  mkdirSync(join(root, 'library', 'finance'), { recursive: true })
+  writeFileSync(join(root, 'library', 'finance', '止损.md'), '# 止损\n> 何时用：买入前\n\n结论：先定止损')
+  await settle(1800)
+  assert.equal(section.text(), first, 'snapshot bytes identical within a session')
+
+  const curator = makeAgent(host, { id: 's-cur', cwd: join(root, 'workspace') })
+  await host.ctx.emit('agent/created', { agent: curator })
+  const protocol = host.sections.find(s => s.agent === 's-cur')
+  assert.equal(protocol.name, 'dsh-memory-knowledge:curator')
+  assert.match(protocol.text(), /<memory-curator version="1">/)
+  assert.deepEqual(host.restrictions.find(r => r.agent === 's-cur').filter, { allow: ['read', 'glob', 'grep'] })
+  assert.equal(host.sections.some(s => s.agent === 's-cur' && s.name.endsWith('snapshot')), false, 'curators do not carry the snapshot')
+})
+
+test('the nightly task is created once, repaired when edited, rebuilt when deleted', async () => {
+  apply(host.ctx, { memoryRoot: root, curator: { time: '01:15', timeZone: 'Asia/Shanghai' }, skills: { linkTargets: [join(root, 'links')] } })
+  await settle(3300)
+  const creates = host.schedule.calls.filter(([kind]) => kind === 'create')
+  assert.equal(creates.length, 1)
+  const request = creates[0][1]
+  assert.equal(request.title, SCHEDULE_TITLE)
+  assert.equal(request.prompt, SCHEDULE_PROMPT)
+  assert.deepEqual(request.timing, { kind: 'daily', daily: { time: '01:15:00', time_zone: 'Asia/Shanghai' } })
+  assert.deepEqual(request.target, { kind: 'new', create: { cwd: join(root, 'workspace') } })
+  assert.equal(host.workspaces[0].path, join(root, 'workspace'))
+  const id = [...host.schedules.keys()][0]
+
+  // The user changes the time and pauses it: kept. Someone rewrites the prompt: repaired.
+  host.schedules.set(id, { ...host.schedules.get(id), prompt: '随便改的', timing: { kind: 'daily', daily: { time: '03:00:00', time_zone: 'Asia/Shanghai' } }, status: 'paused' })
+  await host.ctx.emit('schedule/changed')
+  await settle(700)
+  const repaired = host.schedules.get(id)
+  assert.equal(repaired.prompt, SCHEDULE_PROMPT)
+  assert.equal(repaired.timing.daily.time, '03:00:00', 'the user\'s time is kept')
+  assert.equal(repaired.status, 'paused', 'the user\'s pause is kept')
+
+  host.schedules.delete(id)
+  await host.ctx.emit('schedule/changed')
+  await settle(700)
+  assert.equal(host.schedules.size, 1, 'rebuilt after deletion')
+})
+
+test('disabling curation removes the task', async () => {
+  apply(host.ctx, { memoryRoot: root, curator: { enabled: false }, skills: { linkTargets: [join(root, 'links')] } })
+  await settle(3300)
+  assert.equal(host.schedule.calls.filter(([kind]) => kind === 'create').length, 0)
+})
+
+test('library skills are linked into the skill roots and unlinked when retired', async () => {
+  const links = join(root, 'links')
+  mkdirSync(join(root, 'library', 'skills', 'publish-dsh-plugin'), { recursive: true })
+  writeFileSync(join(root, 'library', 'skills', 'publish-dsh-plugin', 'SKILL.md'), '---\nname: publish-dsh-plugin\ndescription: "发布插件"\nmetadata:\n  dmk_id: mk_aaaaaaaaaa\n---\n\n1. 检查\n')
+  // A real folder with the same name as a future skill belongs to the user.
+  mkdirSync(join(links, 'ui-design'), { recursive: true })
+  apply(host.ctx, { memoryRoot: root, skills: { linkTargets: [links] } })
+  await settle(400)
+  const link = join(links, 'publish-dsh-plugin')
+  assert.equal(lstatSync(link).isSymbolicLink(), true)
+  assert.equal(readlinkSync(link), join(root, 'library', 'skills', 'publish-dsh-plugin'))
+  rmSync(join(root, 'library', 'skills', 'publish-dsh-plugin'), { recursive: true })
+  await settle(2000)
+  assert.equal(existsSync(link), false, 'the dangling link is removed')
+  assert.equal(existsSync(join(links, 'ui-design')), true, 'a user folder is never touched')
+})
+
+test('routes serve status and refuse cross-site requests', async () => {
+  apply(host.ctx, { memoryRoot: root, skills: { linkTargets: [join(root, 'links')] } })
+  await settle(200)
+  const route = host.routes[0]
+  assert.equal(route.path, ROUTE)
+  const call = async (method, path, headers = {}, body) => {
+    const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
+    Object.assign(req, { method, url: path, headers: { host: '127.0.0.1:9', ...headers } })
+    let status = 0
+    let payload = ''
+    const res = { statusCode: 0, setHeader() {}, end(text) { status = this.statusCode; payload = text } }
+    await route.handler(req, res)
+    return { status, body: JSON.parse(payload) }
+  }
+  const ok = await call('GET', `${ROUTE}/status`)
+  assert.equal(ok.status, 200)
+  assert.equal(ok.body.counts.memory, 0)
+  const cross = await call('POST', `${ROUTE}/scan`, { origin: 'https://evil.example', 'content-type': 'application/json' }, {})
+  assert.equal(cross.status, 403)
+  const form = await call('POST', `${ROUTE}/scan`, { 'content-type': 'application/x-www-form-urlencoded' }, {})
+  assert.equal(form.status, 403)
+  const scan = await call('POST', `${ROUTE}/scan`, { 'content-type': 'application/json' }, {})
+  assert.equal(scan.status, 200)
+})
+
+test('fence and config merge helpers', () => {
+  assert.equal(sameOriginViolation({ method: 'GET', headers: { host: 'a:1' } }), null)
+  assert.notEqual(sameOriginViolation({ method: 'GET', headers: { host: 'a:1', 'sec-fetch-site': 'cross-site' } }), null)
+  assert.deepEqual(mergeConfig({ curator: { time: '00:30', enabled: true }, injectTag: 'dmk' }, { curator: { time: '02:00' } }), { curator: { time: '02:00', enabled: true }, injectTag: 'dmk' })
+})
