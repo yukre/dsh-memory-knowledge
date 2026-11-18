@@ -91,7 +91,7 @@ function makeAgent(h, header) {
           systemPrompt: { section(section) { h.sections.push({ agent: header.id, ...section }); return () => {} } },
           tools: {
             restrict(filter) { h.restrictions.push({ agent: header.id, filter }); return () => {} },
-            get(name) { return ['read', 'glob', 'grep', 'bash'].includes(name) ? { name } : undefined },
+            get(name) { return ['read', 'glob', 'grep', 'bash'].includes(name) || h.tools.has(name) ? { name } : undefined },
           },
         })
         return { dispose: async () => {} }
@@ -120,10 +120,22 @@ withTools('registers three day tools and seven curator tools with visibility rul
   const day = makeAgent(host, { id: 's-day', cwd: '/tmp/mk-acceptance' })
   const curator = makeAgent(host, { id: 's-cur', cwd: join(root, 'workspace') })
   const sub = makeAgent(host, { id: 's-sub', cwd: '/tmp/mk-acceptance', origin: 'subagent', delegationDepth: 1 })
+  const outside = makeAgent(host, { id: 's-out', cwd: '/Users/someone/elsewhere' })
+  for (const agent of [day, curator, sub, outside]) await host.ctx.emit('agent/created', { agent })
   const visible = agent => [...host.tools.values()].filter(({ options }) => options.when === undefined || options.when({ agent })).map(({ definition }) => definition.name).sort()
   assert.deepEqual(visible(day), ['mk_feedback', 'mk_recall', 'mk_remember'])
   assert.equal(visible(curator).length, 10)
   assert.deepEqual(visible(sub), ['mk_recall'], 'sub-agents only recall')
+})
+
+withTools('out-of-scope sessions get no section and no tools', async () => {
+  apply(host.ctx, { memoryRoot: root, capture: { includeCwd: ['/tmp/mk-acceptance'] }, skills: { linkTargets: [join(root, 'links')] } })
+  await settle(200)
+  const outside = makeAgent(host, { id: 's-out', cwd: '/Users/someone/elsewhere' })
+  await host.ctx.emit('agent/created', { agent: outside })
+  assert.equal(host.sections.some(section => section.agent === 's-out'), false)
+  const visible = [...host.tools.values()].filter(({ options }) => options.when === undefined || options.when({ agent: outside })).map(({ definition }) => definition.name)
+  assert.deepEqual(visible, [])
 })
 
 test('the snapshot is frozen per agent and the curator gets protocol + restriction', async () => {
@@ -149,7 +161,10 @@ test('the snapshot is frozen per agent and the curator gets protocol + restricti
   const protocol = host.sections.find(s => s.agent === 's-cur')
   assert.equal(protocol.name, 'dsh-memory-knowledge:curator')
   assert.match(protocol.text(), /<memory-curator version="1">/)
-  assert.deepEqual(host.restrictions.find(r => r.agent === 's-cur').filter, { allow: ['read', 'glob', 'grep'] })
+  const allow = host.restrictions.find(r => r.agent === 's-cur').filter.allow
+  assert.deepEqual(allow.slice(0, 3), ['read', 'glob', 'grep'])
+  for (const name of ['mk_next', 'mk_write', 'mk_done', 'mk_recall']) assert.ok(allow.includes(name), `${name} survives the curator restriction`)
+  assert.equal(allow.includes('bash'), false)
   assert.equal(host.sections.some(s => s.agent === 's-cur' && s.name.endsWith('snapshot')), false, 'curators do not carry the snapshot')
 })
 
@@ -240,3 +255,55 @@ test('fence and config merge helpers', () => {
   assert.notEqual(sameOriginViolation({ method: 'GET', headers: { host: 'evil.example:1' } }), null, 'a rebinding Host is refused')
   assert.deepEqual(mergeConfig({ curator: { time: '00:30', enabled: true }, injectTag: 'dmk' }, { curator: { time: '02:00' } }), { curator: { time: '02:00', enabled: true }, injectTag: 'dmk' })
 })
+
+test('a reload re-registers the same snapshot bytes; running sessions are left alone', async () => {
+  const cfg = { memoryRoot: root, skills: { linkTargets: [join(root, 'links')] } }
+  apply(host.ctx, cfg)
+  await settle(200)
+  const agent = makeAgent(host, { id: 's-keep', cwd: '/tmp/mk-acceptance' })
+  await host.ctx.emit('agent/created', { agent })
+  const before = host.sections.find(section => section.agent === 's-keep').text()
+  // The library grows while the session lives on.
+  mkdirSync(join(root, 'library', 'finance'), { recursive: true })
+  writeFileSync(join(root, 'library', 'finance', '止损.md'), '# 止损\n> 何时用：买入前\n\n结论：先定止损')
+  await settle(1800)
+  // Plugin reload (upgrade, HMR, restart): the same session is still running.
+  for (const dispose of host.effects.splice(0)) { try { dispose?.() } catch { /* ignore */ } }
+  await settle(50)
+  const reloaded = makeHost()
+  // Same running session, same Agent object: its own scoped context records
+  // into the new host's lists from now on (the old scope was disposed).
+  const kept = makeAgent(reloaded, { id: 's-keep', cwd: '/tmp/mk-acceptance' })
+  reloaded.ctx.agents.list = () => [kept, makeAgent(reloaded, { id: 's-never', cwd: '/tmp/mk-acceptance' })]
+  host = reloaded
+  apply(reloaded.ctx, cfg)
+  await settle(400)
+  const again = reloaded.sections.find(section => section.agent === 's-keep')
+  assert.ok(again, 'the session that had a snapshot gets it back')
+  assert.equal(again.text(), before, 'byte-identical across reload')
+  assert.equal(reloaded.sections.some(section => section.agent === 's-never'), false, 'a session that never had one is not changed mid-flight')
+  // A brand-new session after reload sees the new category.
+  const fresh = makeAgent(reloaded, { id: 's-new', cwd: '/tmp/mk-acceptance' })
+  await reloaded.ctx.emit('agent/created', { agent: fresh })
+  assert.match(reloaded.sections.find(section => section.agent === 's-new').text(), /finance/)
+})
+
+test('a lost task id adopts the existing task instead of creating a duplicate', async () => {
+  const cfg = { memoryRoot: root, skills: { linkTargets: [join(root, 'links')] } }
+  host.schedules.set('schedule-old', { id: 'schedule-old', title: SCHEDULE_TITLE, prompt: SCHEDULE_PROMPT, status: 'active', target: { kind: 'new', create: { cwd: join(root, 'workspace') } } })
+  host.schedules.set('schedule-dup', { id: 'schedule-dup', title: SCHEDULE_TITLE, prompt: SCHEDULE_PROMPT, status: 'active', target: { kind: 'new', create: { cwd: join(root, 'workspace') } } })
+  host.schedule.catalog = async () => [...host.schedules.values()]
+  apply(host.ctx, cfg)
+  await settle(3300)
+  assert.equal(host.schedule.calls.filter(([kind]) => kind === 'create').length, 0)
+  assert.deepEqual([...host.schedules.keys()], ['schedule-old'], 'the duplicate is removed')
+})
+
+test('scope paths match their real location, even before the folder exists', async () => {
+  const { resolveConfig } = await import('../lib/config.js')
+  const name = `mk-scope-${process.pid}-${Date.now()}`
+  const cfg = resolveConfig({ capture: { includeCwd: [`/tmp/${name}`] } })
+  assert.ok(cfg.capture.includeCwd.includes(`/tmp/${name}`))
+  if (process.platform === 'darwin') assert.ok(cfg.capture.includeCwd.includes(`/private/tmp/${name}`))
+})
+

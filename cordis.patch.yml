@@ -10,7 +10,14 @@
 #   recall          result count and snippet length of mk_recall
 #   pools           promotion threshold and staging expiry
 #   skills          skill output cap and link targets
+#
+# ACCEPTANCE PHASE: the default scope is limited to /tmp/mk-acceptance so that
+# only synthetic sessions are injected, given tools, and curated. Opening the
+# plugin to every session = an empty includeCwd (settings page, or this file).
 - insert:
     - id: dsh-memory-knowledge
       name: 'dsh-memory-knowledge'
-      config: {}
+      config:
+        capture:
+          includeCwd:
+            - /tmp/mk-acceptance
