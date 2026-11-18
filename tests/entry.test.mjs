@@ -73,7 +73,7 @@ function makeHost() {
         sandboxPolicy: { registerWritableRoot() { return () => {} } },
       }[name]
     },
-    inject(names, fn) { if (names.includes('webServer')) fn({ ...ctx, webServer: { register(route) { routes.push(route); return () => {} } } }) },
+    inject(names, fn) { if (names.includes('webServer')) fn(Object.assign(Object.create(ctx), { webServer: { register(route) { routes.push(route); return () => {} } } })) },
     tools: { register(definition, options = {}) { tools.set(definition.name, { definition, options }); return () => tools.delete(definition.name) } },
     agents: { list() { return [] } },
   }
@@ -218,6 +218,11 @@ test('routes serve status and refuse cross-site requests', async () => {
     await route.handler(req, res)
     return { status, body: JSON.parse(payload) }
   }
+  host.ctx.connection = { requestRejection: req => (req.headers['x-test-unauth'] ? 401 : undefined) }
+  const unauth = await call('GET', `${ROUTE}/status`, { 'x-test-unauth': '1' })
+  assert.equal(unauth.status, 401, 'DSH page authentication is required')
+  const rebinding = await call('GET', `${ROUTE}/status`, { host: 'evil.example:9' })
+  assert.equal(rebinding.status, 403)
   const ok = await call('GET', `${ROUTE}/status`)
   assert.equal(ok.status, 200)
   assert.equal(ok.body.counts.memory, 0)
@@ -230,7 +235,8 @@ test('routes serve status and refuse cross-site requests', async () => {
 })
 
 test('fence and config merge helpers', () => {
-  assert.equal(sameOriginViolation({ method: 'GET', headers: { host: 'a:1' } }), null)
-  assert.notEqual(sameOriginViolation({ method: 'GET', headers: { host: 'a:1', 'sec-fetch-site': 'cross-site' } }), null)
+  assert.equal(sameOriginViolation({ method: 'GET', headers: { host: '127.0.0.1:1' } }), null)
+  assert.notEqual(sameOriginViolation({ method: 'GET', headers: { host: '127.0.0.1:1', 'sec-fetch-site': 'cross-site' } }), null)
+  assert.notEqual(sameOriginViolation({ method: 'GET', headers: { host: 'evil.example:1' } }), null, 'a rebinding Host is refused')
   assert.deepEqual(mergeConfig({ curator: { time: '00:30', enabled: true }, injectTag: 'dmk' }, { curator: { time: '02:00' } }), { curator: { time: '02:00', enabled: true }, injectTag: 'dmk' })
 })
