@@ -11,7 +11,7 @@ test('rewriting a file in place (no id line) edits the existing item, no UNIQUE 
   const root = mkdtempSync(join(tmpdir(), 'mk-rewrite-'))
   const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
   await store.open()
-  const path = store.pathFor('staging', '偏好', '部署前检查清单')
+  const path = store.pathFor('staging', 'preferences', '部署前检查清单')
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, '# 部署前检查清单\n> 何时用：发布前\n\n结论：检查配置\n\n<!-- dmk:id=mk_aaaaaaaaa0 -->\n')
   await store.scan()  // → human-add
@@ -33,7 +33,7 @@ test('a corrupt graph database is rebuilt from the Markdown files', async () => 
   const root = mkdtempSync(join(tmpdir(), 'mk-corrupt-recover-'))
   const first = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
   await first.open()
-  const path = first.pathFor('memory', '偏好', '幸存条目')
+  const path = first.pathFor('memory', 'preferences', '幸存条目')
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, '# 幸存条目\n> 何时用：x\n\n结论：内容\n\n<!-- dmk:id=mk_aaaaaaaaa0 -->\n')
   await first.scan()

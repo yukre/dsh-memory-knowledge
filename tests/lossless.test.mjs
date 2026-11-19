@@ -21,8 +21,8 @@ test('every tool result passes the host lossless check (undefined properties are
   const budget = { charsLeft: 1e6, sessionsLeft: 9 }
 
   // 1) a human edit → human-edit unit
-  mkdirSync(join(root, 'library', '偏好'), { recursive: true })
-  const row = store.writeItem({ id: store.freshId(), path: store.pathFor('memory', '偏好', '四段式'), pool: 'memory', area: '偏好', kind: 'preference', status: 'active', source_sessions: [], confirmed: false }, { title: '四段式', when: '写周报', body: 'A' })
+  mkdirSync(join(root, 'library', 'preferences'), { recursive: true })
+  const row = store.writeItem({ id: store.freshId(), path: store.pathFor('memory', 'preferences', '四段式'), pool: 'memory', area: 'preferences', kind: 'preference', status: 'active', source_sessions: [], confirmed: false }, { title: '四段式', when: '写周报', body: 'A' })
   writeFileSync(row.path, readFileSync(row.path, 'utf8').replace('A', 'B'))
   await store.scan()
 
@@ -39,7 +39,7 @@ test('every tool result passes the host lossless check (undefined properties are
   assert.ok(isJsonValue(engine.status()), 'status is not lossless')
 
   // 4) all gate refusals (they spread extra into the result)
-  const bad = await engine.write({ op: 'add', kind: 'fact', claim: 'x', why: 'y'.repeat(30), scope: 'z', when: 'w', area: '偏好', evidence: [{ kind: 'session', sessionId: 'nope', seq: 2, quote: '不存在' }] }, ctx).catch(e => e)
+  const bad = await engine.write({ op: 'add', kind: 'fact', claim: 'x', why: 'y'.repeat(30), scope: 'z', when: 'w', area: 'preferences', evidence: [{ kind: 'session', sessionId: 'nope', seq: 2, quote: '不存在' }] }, ctx).catch(e => e)
   assert.ok(bad.code, 'expected a gate refusal')
   assert.ok(isJsonValue({ ok: false, code: bad.code, detail: bad.detail }), 'refusal value is not lossless')
 

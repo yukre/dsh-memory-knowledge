@@ -71,13 +71,13 @@ function checklist(extra = {}) {
 
 test('mk_remember writes straight into memory with the last human message as evidence', async () => {
   session('s1', [{ user: '记住：以后回答我都要结论前置，先说结论再展开', assistant: '好的，已记住。' }])
-  const result = await engine.remember({ kind: 'preference', claim: '回答结论前置，先给结论再展开', why: '用户明确要求以后所有回答都先说结论，便于快速判断要不要往下读', scope: '所有回答', when: '每次回答用户时', area: '偏好', title: '结论前置' }, { sessionId: 's1' })
+  const result = await engine.remember({ kind: 'preference', claim: '回答结论前置，先给结论再展开', why: '用户明确要求以后所有回答都先说结论，便于快速判断要不要往下读', scope: '所有回答', when: '每次回答用户时', area: 'preferences', title: '结论前置' }, { sessionId: 's1' })
   assert.equal(result.ok, true)
   assert.equal(result.pool, 'memory')
   const row = store.graph.item(result.id)
-  assert.equal(row.area, '偏好')
+  assert.equal(row.area, 'preferences')
   assert.match(readFileSync(row.path, 'utf8'), /\*\*结论\*\*：回答结论前置/)
-  assert.match(result.cite, /^参考：\[结论前置\]\(<.+偏好\/结论前置\.md>\)（记忆 · 依据：会话「标题-s1」/)
+  assert.match(result.cite, /^参考：\[结论前置\]\(<.+preferences\/结论前置\.md>\)（记忆 · 依据：会话「标题-s1」/)
 })
 
 test('the curator cannot invent evidence', async () => {
@@ -168,7 +168,7 @@ test('a human-edited item is locked until newer human evidence arrives', async (
 
 test('feedback: wrong disputes, forget archives with a tombstone, confirm counts', async () => {
   session('s1', [{ user: '记住我习惯用 pnpm 而不是 npm', assistant: '好' }])
-  const pref = await engine.remember({ kind: 'preference', claim: '包管理用 pnpm，不用 npm', why: '用户明确表示长期习惯使用 pnpm，统一工具避免锁文件冲突', scope: '新建或维护 JS 项目时', when: '需要安装依赖时', area: '偏好', title: '用 pnpm' }, { sessionId: 's1' })
+  const pref = await engine.remember({ kind: 'preference', claim: '包管理用 pnpm，不用 npm', why: '用户明确表示长期习惯使用 pnpm，统一工具避免锁文件冲突', scope: '新建或维护 JS 项目时', when: '需要安装依赖时', area: 'preferences', title: '用 pnpm' }, { sessionId: 's1' })
   session('s2', [{ user: '这条不对，我现在用 bun 了', assistant: '收到' }])
   const disputed = await engine.feedback({ id: pref.id, verdict: 'outdated' }, { sessionId: 's2' })
   assert.equal(disputed.status, 'disputed')

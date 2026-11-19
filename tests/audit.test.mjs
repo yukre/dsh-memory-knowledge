@@ -30,7 +30,7 @@ test('evidence quotes are redacted before persisting (secrets never stored verba
   const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
   await store.open()
   const engine = new Engine(store, { sessionQuery: () => ({ readSession: async id => ({ events: sessions.get(id) }) }), sessionTitle: async () => 't' })
-  const result = await engine.remember({ kind: 'preference', claim: '服务器凭据见密码管理器', why: '用户要求记住凭据存放位置而不是凭据本身', scope: '运维', when: '登录服务器时', title: '凭据位置', area: '偏好' }, { sessionId: 's1' })
+  const result = await engine.remember({ kind: 'preference', claim: '服务器凭据见密码管理器', why: '用户要求记住凭据存放位置而不是凭据本身', scope: '运维', when: '登录服务器时', title: '凭据位置', area: 'preferences' }, { sessionId: 's1' })
   assert.equal(result.ok, true)
   const log = readFileSync(join(root, 'meta', 'changelog.jsonl'), 'utf8')
   assert.equal(log.includes(secret), false, 'the secret must not appear in the changelog')
