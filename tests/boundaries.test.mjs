@@ -330,8 +330,9 @@ test('prompt: snapshot always renders, even with nothing to say', () => {
   const text = snapshotText({ tag: 'dmk', root: '/r', areas: [], preferences: [], directoryMaxChars: 400, profileMaxChars: 600, subagent: false })
   assert.match(text, /^<dmk>/)
   assert.match(text, /<\/dmk>$/)
-  assert.match(text, /暂无分类/)
-  assert.match(text, /暂无/)
+  // The empty index now points at mk_recall rather than claiming to be empty.
+  assert.match(text, /mk_recall/)
+  assert.doesNotMatch(text, /暂无分类/)
   const sub = snapshotText({ tag: 'dmk', root: '/r', areas: [], preferences: [], directoryMaxChars: 400, profileMaxChars: 600, subagent: true })
   assert.doesNotMatch(sub, /mk_remember/, 'a sub-agent does not get the write instructions')
 })
@@ -493,4 +494,26 @@ test('changelog: refuses an unknown op and survives a torn last line', async () 
   assert.equal(cl.tail(5).length, 1)
   assert.equal(cl.find('missing'), undefined)
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('prompt: an empty index shows a fixed pointer, never live counts', () => {
+  const render = () => snapshotText({ tag: 'dmk', root: '/r', areas: [], preferences: [], directoryMaxChars: 400, profileMaxChars: 600, subagent: false })
+  const text = render()
+  // A count or date here would change the snapshot whenever the library does,
+  // missing the prompt cache on every request.
+  assert.equal(/\d+\s*(个分类|条)/.test(text), false, 'the pointer must not carry live numbers')
+  assert.match(text, /mk_recall/)
+  assert.equal(render(), text, 'byte-identical across calls')
+})
+
+test('prompt: a populated index lists areas and preferences instead of the pointer', () => {
+  const text = snapshotText({
+    tag: 'dmk', root: '/r',
+    areas: [{ area: 'cloudbase', description: '云开发', count: 3 }],
+    preferences: [{ title: '结论前置', claim: '先说结论' }],
+    directoryMaxChars: 400, profileMaxChars: 600, subagent: false,
+  })
+  assert.match(text, /- cloudbase：云开发/)
+  assert.match(text, /- 结论前置 —— 先说结论/)
+  assert.doesNotMatch(text, /固定路标/)
 })
