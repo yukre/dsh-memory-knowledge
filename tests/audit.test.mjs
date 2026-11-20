@@ -145,3 +145,80 @@ test('a deleted file no longer poisons the next write with UNIQUE(items.path)', 
   assert.ok(store.graph.item(id2))
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('checkIsKnowledge refuses what does not belong in a knowledge base', async () => {
+  const { checkIsKnowledge, GateError } = await import('../lib/gate.js')
+  const base = { kind: 'fact', claim: '', why: '理由足够长的一句话', scope: '边界', when: '场景', title: 'T', area: 'notes' }
+  const refuses = (claim, code, extra = {}) => assert.throws(
+    () => checkIsKnowledge({ ...base, claim, ...extra }, {}),
+    (error) => error instanceof GateError && error.code === code,
+    `${claim} should be refused as ${code}`,
+  )
+
+  // An agent's role or working style belongs to AGENTS.md, not the library.
+  refuses('我是「管家」会话：用户丢来任务时，优先派给有该领域上下文的其他会话去做', 'ROLE_INSTRUCTION')
+  refuses('你是管家，如果其他会话有上下文，可以把任务派给其他会话做', 'ROLE_INSTRUCTION')
+  refuses('本会话默认当管家，任务优先派给其他会话', 'ROLE_INSTRUCTION')
+  refuses('你以后都要先查记忆再上网', 'ROLE_INSTRUCTION')
+
+  // Live state goes stale on its own.
+  refuses('服务端口现在是 58438，跑在本机', 'LIVE_STATE')
+  refuses('当前余额是 200 元', 'LIVE_STATE')
+
+  // An errand is not a reusable conclusion.
+  refuses('帮我查一下致欧的平台版什么时候到期', 'ONE_OFF_TASK')
+  refuses('查一下致欧的平台版到期时间', 'ONE_OFF_TASK')
+
+  // Real knowledge passes.
+  const passes = (claim) => assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim }, {}), claim)
+  passes('CloudBase 平台版标价 1 万元/月，7 折即 7000/月，查订单要用 UIN')
+  passes('发布插件前必须跑 check-submission，跳过它曾被市场打回')
+  passes('用户偏好结论前置，先说结论再展开')
+  passes('发布插件的流程：先跑官方校验，再本地安装验证，最后开 PR')
+  // An errand that produced a conclusion is knowledge.
+  passes('致欧平台版资源 2026-11-29 到期，结论是月底前要确认余额')
+})
+
+test('checkIsKnowledge refuses a memory the workspace instructions already carry', async () => {
+  const { checkIsKnowledge, GateError } = await import('../lib/gate.js')
+  // Neutral wording that trips none of the earlier checks, so this test
+  // isolates the instructions-duplication rule.
+  const claim = 'CloudBase 平台版按 UIN 查询订单，不要只按客户名称搜索'
+  const base = { kind: 'fact', claim, why: '理由足够长的一句话', scope: '边界', when: '场景', title: 'T', area: 'notes' }
+  assert.throws(
+    () => checkIsKnowledge(base, { workspaceInstructions: `## 管家模式\n\n${claim}\n\n其他内容` }),
+    (error) => error instanceof GateError && error.code === 'ALREADY_IN_INSTRUCTIONS',
+  )
+  assert.doesNotThrow(() => checkIsKnowledge(base, { workspaceInstructions: '完全无关的工作区指令内容' }))
+  assert.doesNotThrow(() => checkIsKnowledge(base, {}), 'no instructions available is not a refusal')
+})
+
+test('mk_remember cannot store an agent role instruction (engine wiring)', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const root = mkdtempSync(join(tmpdir(), 'mk-know-'))
+  const sessions = new Map([['s1', [
+    { type: 'turn/start', seq: 1, time: 1, data: {} },
+    { type: 'user/message', seq: 2, time: 2, data: { content: [{ type: 'text', text: '你是管家，任务优先派给有上下文的会话' }], source: { kind: 'user' } } },
+    { type: 'turn/end', seq: 3, time: 3, data: {} },
+  ]]])
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {
+    sessionQuery: () => ({ readSession: async id => ({ events: sessions.get(id) }) }),
+    sessionTitle: async () => 't',
+  })
+  // The person says it, so evidence is valid — but it is still not knowledge.
+  await assert.rejects(
+    engine.remember({
+      kind: 'method',
+      claim: '我是「管家」会话：任务优先派给有该领域上下文的其他会话去做',
+      why: '用户明确说明本会话的角色定位与工作方式，要求以后都这样',
+      scope: '本会话', when: '用户丢来任务时', area: 'preferences', title: '管家会话',
+    }, { sessionId: 's1' }),
+    (error) => error.code === 'ROLE_INSTRUCTION',
+  )
+  assert.equal(store.graph.counts().memory, 0, 'nothing was written')
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
