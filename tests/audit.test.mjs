@@ -360,6 +360,16 @@ test('the settings page explains what an empty preset means', async () => {
   // A ⓘ on the preset field, naming the actual default this install produces.
   assert.match(src, /presetHint:/)
   assert.match(src, /standard/, 'the hint should name the real default, not "the default"')
+  // A preset chooses tools and skills, not the model (dsh-agent-preset-registry:
+  // "Preset selection ... What the model sees: nothing directly; the selected
+  // preset's plugins own the model-visible tools and prompt sections"). An
+  // earlier hint wrongly told the user to pick a "cheaper model preset".
+  const hints = [...src.matchAll(/presetHint: '((?:[^'\\]|\\.)*)'/g)].map(match => match[1])
+  assert.ok(hints.length >= 1)
+  for (const hint of hints) {
+    assert.doesNotMatch(hint, /省钱|便宜的?模型|cheaper model/, 'a preset does not select the model')
+    assert.match(hint, /模型|model/, 'the hint should say explicitly that the model is unaffected')
+  }
   assert.match(src, /dmk-hint/, 'the hint needs a visible affordance')
   // A native title tooltip waits 1-2s in Electron and read as "the ? does nothing";
   // the explanation must be a rendered bubble that shows on hover/focus.
