@@ -365,3 +365,58 @@ test('the settings page explains what an empty preset means', async () => {
   assert.match(src, /scopeBlock/)
   assert.match(src, /只对指定目录生效/)
 })
+
+test('the primary button stays legible in both themes', async () => {
+  const { readFileSync, existsSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // The label must be the token the host pairs with the fill. label-on-color is
+  // always white while the fill inverts with the theme, which rendered a white
+  // block with invisible white text in dark mode.
+  assert.match(src, /dmk-btn-primary\{[^}]*color:var\(--dsw-alias-label-primary-foreground/)
+  assert.doesNotMatch(src, /dmk-btn-primary\{[^}]*color:var\(--dsw-alias-label-on-color/)
+  // Disabled fades the proven pair instead of swapping in a light fill.
+  const disabled = /\.dmk-btn-primary:disabled\{([^}]*)\}/.exec(src)?.[1] ?? ''
+  assert.match(disabled, /opacity:/, 'disabled should fade, not recolour')
+  assert.doesNotMatch(disabled, /button-primary-dimmed/, 'dimmed is a light surface and breaks the pairing')
+
+  // Compute the actual contrast from the installed theme, when available.
+  const cssPath = '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/src/styles/design-platform.css'
+  if (!existsSync(cssPath)) return
+  const css = readFileSync(cssPath, 'utf8')
+  const statics = new Map()
+  for (const match of css.matchAll(/--dsw-static-neutral-bluish-(\d+):\s*rgb\((\d+),\s*(\d+),\s*(\d+)\)/g)) {
+    statics.set(`--dsw-static-neutral-bluish-${match[1]}`, [Number(match[2]), Number(match[3]), Number(match[4])])
+  }
+  const themes = { light: new Map(), dark: new Map() }
+  let current = 'light'
+  for (const line of css.split('\n')) {
+    if (/^body\s*\{/.test(line)) current = 'light'
+    else if (/^body\[data-ds-dark-theme\]/.test(line)) current = 'dark'
+    const match = /^\s*(--dsw-alias-[a-z0-9-]+):\s*(.+);/.exec(line)
+    if (match) themes[current].set(match[1], match[2].trim())
+  }
+  const resolve = (theme, name, depth = 0) => {
+    if (depth > 6) return undefined
+    const raw = themes[theme].get(name)
+    if (raw === undefined) return undefined
+    const ref = /var\((--[a-z0-9-]+)\)/.exec(raw)
+    if (ref === null) return undefined
+    return statics.get(ref[1]) ?? resolve(theme, ref[1], depth + 1)
+  }
+  const luminance = ([r, g, b]) => {
+    const channel = value => { const v = value / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4 }
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+  }
+  const contrast = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+    return (hi + 0.05) / (lo + 0.05)
+  }
+  for (const theme of ['light', 'dark']) {
+    const label = resolve(theme, '--dsw-alias-label-primary-foreground')
+    const fill = resolve(theme, '--dsw-alias-button-primary-fill')
+    const hover = resolve(theme, '--dsw-alias-button-primary-hover')
+    assert.ok(label && fill && hover, `${theme}: tokens should resolve`)
+    assert.ok(contrast(label, fill) >= 4.5, `${theme}: label on fill is ${contrast(label, fill).toFixed(2)}:1`)
+    assert.ok(contrast(label, hover) >= 4.5, `${theme}: label on hover is ${contrast(label, hover).toFixed(2)}:1`)
+  }
+})
