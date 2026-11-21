@@ -314,3 +314,54 @@ test('every CSS variable the page uses exists in the host theme', async () => {
   const missing = used.filter(variable => !css.includes(variable))
   assert.deepEqual(missing, [], `these variables do not exist in the host theme: ${missing.join(', ')}`)
 })
+
+test('the scope switch and its path list round-trip to includeCwd/excludeCwd', async () => {
+  // Mirrors the settings page: one switch, one list, `!` marks an exclusion.
+  // The page must not lose either half when reading back or saving.
+  const lines = text => String(text || '').split('\n').map(line => line.trim()).filter(Boolean)
+  const toForm = capture => ({
+    scopeRestricted: (capture.includeCwd || []).length > 0,
+    scopePaths: [
+      ...(capture.includeCwd || []),
+      ...(capture.excludeCwd || []).map(path => `!${path}`),
+    ].join('\n'),
+  })
+  const fromForm = form => {
+    const listed = lines(form.scopePaths)
+    return {
+      includeCwd: form.scopeRestricted ? listed.filter(line => !line.startsWith('!')) : [],
+      excludeCwd: listed.filter(line => line.startsWith('!')).map(line => line.slice(1).trim()).filter(Boolean),
+    }
+  }
+
+  for (const capture of [
+    { includeCwd: [], excludeCwd: [] },
+    { includeCwd: ['/a'], excludeCwd: [] },
+    { includeCwd: ['/a'], excludeCwd: ['/a/tmp'] },
+    { includeCwd: ['/a', '/b'], excludeCwd: ['/c'] },
+  ]) {
+    const back = fromForm(toForm(capture))
+    assert.deepEqual(back.includeCwd, capture.includeCwd, JSON.stringify(capture))
+    assert.deepEqual(back.excludeCwd, capture.excludeCwd, JSON.stringify(capture))
+  }
+
+  // Switching the restriction off means "every session", so the include list empties.
+  assert.deepEqual(fromForm({ scopeRestricted: false, scopePaths: '/a\n!/b' }).includeCwd, [])
+  // Exclusions survive even with the switch off.
+  assert.deepEqual(fromForm({ scopeRestricted: false, scopePaths: '/a\n!/b' }).excludeCwd, ['/b'])
+  // The switch reflects whether an include list exists.
+  assert.equal(toForm({ includeCwd: ['/a'], excludeCwd: [] }).scopeRestricted, true)
+  assert.equal(toForm({ includeCwd: [], excludeCwd: ['/x'] }).scopeRestricted, false)
+})
+
+test('the settings page explains what an empty preset means', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // A ⓘ on the preset field, naming the actual default this install produces.
+  assert.match(src, /presetHint:/)
+  assert.match(src, /standard/, 'the hint should name the real default, not "the default"')
+  assert.match(src, /dmk-hint/, 'the hint needs a visible affordance')
+  // The scope switch carries its own explanation too.
+  assert.match(src, /scopeBlock/)
+  assert.match(src, /只对指定目录生效/)
+})
