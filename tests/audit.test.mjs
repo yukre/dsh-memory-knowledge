@@ -367,6 +367,16 @@ test('the settings page explains what an empty preset means', async () => {
   assert.match(src, /role: 'tooltip'/)
   assert.doesNotMatch(src, /className: 'dmk-hint', title:/, 'do not fall back to the native title attribute')
 
+  // The bubble must start hidden and appear only on hover/focus. Shipping it
+  // without a hide rule left it rendered permanently — it looked like a layout
+  // bug because the text sat over the form all the time.
+  const tipRule = /\.dmk-tip\{([^}]*)\}/.exec(src)?.[1] ?? ''
+  assert.match(tipRule, /display:\s*none/, 'the bubble must be hidden by default')
+  assert.match(src, /\.dmk-hint:hover \.dmk-tip[^{]*\{[^}]*display:\s*block/, 'hover shows it')
+  assert.match(src, /\.dmk-hint:focus \.dmk-tip[^{]*\{[^}]*display:\s*block/, 'keyboard focus shows it')
+  // Anchoring must not use right:0, which measured left:-82px on the real page.
+  assert.doesNotMatch(src, /\.dmk-tip\{[^}]*right:\s*0/, 'right:0 pushes the bubble off the left edge')
+
   // The scope switch carries its own explanation too.
   assert.match(src, /scopeBlock/)
   assert.match(src, /只对指定目录生效/)
@@ -424,5 +434,49 @@ test('the primary button stays legible in both themes', async () => {
     assert.ok(label && fill && hover, `${theme}: tokens should resolve`)
     assert.ok(contrast(label, fill) >= 4.5, `${theme}: label on fill is ${contrast(label, fill).toFixed(2)}:1`)
     assert.ok(contrast(label, hover) >= 4.5, `${theme}: label on hover is ${contrast(label, hover).toFixed(2)}:1`)
+  }
+})
+
+test('the tooltip shows only on hover or focus, verified in a real browser', async () => {
+  // Reading CSS is not enough: the first version had a correct-looking rule set
+  // and still rendered the bubble permanently, then anchored it at a negative
+  // x. This renders the real stylesheet in Chromium and measures.
+  let chromium
+  try {
+    ({ chromium } = await import('playwright'))
+  } catch {
+    const { execFileSync } = await import('node:child_process')
+    try { execFileSync('python3', ['-c', 'import playwright'], { stdio: 'ignore' }) } catch { return }
+    return   // Python playwright is available to the integration run, not to node
+  }
+  const { readFileSync, writeFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const css = /const css = `([\s\S]*?)`\n/.exec(src)[1]
+  const html = `<!doctype html><meta charset="utf-8"><style>${css}</style>
+<label class="dmk-field"><span class="dmk-label-row">预设
+<span class="dmk-hint" id="h" tabindex="0">?<span class="dmk-tip" id="t" role="tooltip">说明</span></span>
+</span><input></label>`
+  const file = new URL('../.tmp-tip.html', import.meta.url)
+  writeFileSync(file, html)
+  const browser = await chromium.launch({ channel: 'chrome', headless: true })
+  try {
+    const page = await browser.newPage({ viewport: { width: 900, height: 500 } })
+    await page.goto(file.href)
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('t')).display), 'none', 'hidden before hover')
+    await page.hover('#h')
+    await page.waitForTimeout(150)
+    const shown = await page.evaluate(() => {
+      const rect = document.getElementById('t').getBoundingClientRect()
+      return { display: getComputedStyle(document.getElementById('t')).display, left: rect.left, right: rect.right, width: innerWidth }
+    })
+    assert.equal(shown.display, 'block', 'shown on hover')
+    assert.ok(shown.left >= 0 && shown.right <= shown.width, `bubble must stay in view, got ${shown.left}..${shown.right} of ${shown.width}`)
+    await page.mouse.move(5, 5)
+    await page.waitForTimeout(150)
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('t')).display), 'none', 'hidden after leaving')
+  } finally {
+    await browser.close()
+    const { rmSync } = await import('node:fs')
+    try { rmSync(file) } catch { /* already gone */ }
   }
 })
