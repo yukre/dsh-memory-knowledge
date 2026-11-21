@@ -222,3 +222,56 @@ test('mk_remember cannot store an agent role instruction (engine wiring)', async
   assert.equal(store.graph.counts().memory, 0, 'nothing was written')
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('checkIsKnowledge refuses a rule a skill already owns, and spares facts', async () => {
+  const { checkIsKnowledge, looksLikeSkillRule, GateError } = await import('../lib/gate.js')
+  const skill = {
+    name: 'dsh-session-status',
+    description: 'Use when the user asks about the state of sessions, tasks, background jobs. Answers them by calling the local dsh-session-api HTTP surface (GET /sessions, /sessions/:id/state).',
+    body: '# 查询会话状态\n\n用户问「任务跑完了吗」这类状态问题时，调用本地 session-api 接口回答。\n先取端口和 token，再 GET /sessions 列出会话，然后 GET /sessions/:id/state 看运行状态。不要读磁盘缓存。',
+  }
+  const base = { kind: 'method', claim: '', why: '理由足够长的一句话', scope: '边界', when: '场景', title: 'T', area: 'dsh' }
+
+  // A verbatim copy is caught.
+  assert.throws(
+    () => checkIsKnowledge({ ...base, claim: skill.description.slice(0, 120) }, { skills: [skill] }),
+    (error) => error instanceof GateError && error.code === 'ALREADY_IN_SKILL',
+  )
+  // A paraphrase that keeps the subject and still reads as a procedure is caught too.
+  assert.throws(
+    () => checkIsKnowledge({ ...base, claim: '查询 DSH 会话状态时，调用本地 session-api 的 GET /sessions 接口，不要读磁盘缓存' }, { skills: [skill] }),
+    (error) => error instanceof GateError && error.code === 'ALREADY_IN_SKILL',
+  )
+  // A fact that merely mentions the same domain is not a rule copy.
+  assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim: 'CloudBase 平台版标价 1 万元每月，7 折即 7000 每月' }, { skills: [skill] }))
+  assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim: 'Token 工厂产业链的价值分配：微笑曲线两端最厚、中游制造最薄' }, { skills: [skill] }))
+  // No skills available is never a refusal.
+  assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim: skill.description.slice(0, 120) }, {}))
+
+  // The helper reports why, so the message can name the skill.
+  assert.equal(looksLikeSkillRule(skill.description.slice(0, 120), skill).copied, true)
+  assert.equal(looksLikeSkillRule('用户偏好结论前置，先说结论再展开', skill).copied, false)
+})
+
+test('the engine scans installed skills and caches the index', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const root = mkdtempSync(join(tmpdir(), 'mk-skills-'))
+  const skillsDir = join(root, 'skills')
+  mkdirSync(join(skillsDir, 'demo-skill'), { recursive: true })
+  writeFileSync(join(skillsDir, 'demo-skill', 'SKILL.md'), '---\nname: demo-skill\ndescription: "演示技能，做某件事"\n---\n\n步骤：先做 A 再做 B。\n')
+  const clock = { now: Date.now() }
+  const store = new Store(resolveConfig({ memoryRoot: root, skills: { linkTargets: [skillsDir] } }), { now: () => clock.now })
+  await store.open()
+  const engine = new Engine(store, {})
+  const first = engine.installedSkills()
+  assert.equal(first.length, 1)
+  assert.equal(first[0].name, 'demo-skill')
+  assert.match(first[0].body, /先做 A 再做 B/)
+  // Cached: a second call within the window reuses the array.
+  assert.equal(engine.installedSkills(), first)
+  clock.now += 61_000
+  assert.notEqual(engine.installedSkills(), first, 'the index refreshes after a minute')
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
