@@ -284,3 +284,33 @@ test('the engine scans skills for the session cross workspaces, and does not lea
   assert.match(body, /SSL_CERT_FILE/, 'a rule near the end of a long skill is still indexed')
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('every CSS variable the page uses exists in the host theme', async () => {
+  const { readFileSync, readdirSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const used = [...new Set([...src.matchAll(/var\((--[a-z0-9-]+)/g)].map(match => match[1]))]
+  assert.ok(used.length > 5, 'the page should use theme variables, not hard-coded colours')
+
+  // Collect every theme declaration the installed DSH ships.
+  const base = '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai'
+  if (!existsSync(base)) return   // outside the desktop install: nothing to compare against
+  let css = ''
+  const walk = (dir, depth) => {
+    if (depth > 4) return
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path, depth + 1)
+      else if (entry.name.endsWith('.css')) { try { css += readFileSync(path, 'utf8') } catch { /* unreadable */ } }
+    }
+  }
+  for (const pkg of readdirSync(base)) if (/theme|ui-primitives|ui-layout/.test(pkg)) walk(join(base, pkg), 0)
+  assert.ok(css.length > 1000, 'the host theme should have been read')
+
+  // A variable invented here silently falls back to its literal default, which
+  // is how the primary button lost its label colour and hover fill.
+  const missing = used.filter(variable => !css.includes(variable))
+  assert.deepEqual(missing, [], `these variables do not exist in the host theme: ${missing.join(', ')}`)
+})
