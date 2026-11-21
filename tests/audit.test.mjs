@@ -354,42 +354,25 @@ test('the scope switch and its path list round-trip to includeCwd/excludeCwd', a
   assert.equal(toForm({ includeCwd: [], excludeCwd: ['/x'] }).scopeRestricted, false)
 })
 
-test('the settings page explains what an empty preset means', async () => {
+test('the preset field is not exposed, and the extra-instructions field is explained', async () => {
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
-  // A ⓘ on the preset field, naming the actual default this install produces.
-  assert.match(src, /presetHint:/)
-  assert.match(src, /standard/, 'the hint should name the real default, not "the default"')
-  // A preset chooses tools and skills, not the model (dsh-agent-preset-registry:
-  // "Preset selection ... What the model sees: nothing directly; the selected
-  // preset's plugins own the model-visible tools and prompt sections"). An
-  // earlier hint wrongly told the user to pick a "cheaper model preset".
-  const hints = [...src.matchAll(/presetHint: '((?:[^'\\]|\\.)*)'/g)].map(match => match[1])
-  assert.ok(hints.length >= 1)
-  for (const hint of hints) {
-    assert.doesNotMatch(hint, /省钱|便宜的?模型|cheaper model/, 'a preset does not select the model')
-    assert.match(hint, /模型|model/, 'the hint should say explicitly that the model is unaffected')
-  }
-  assert.match(src, /dmk-hint/, 'the hint needs a visible affordance')
-  // A native title tooltip waits 1-2s in Electron and read as "the ? does nothing";
-  // the explanation must be a rendered bubble that shows on hover/focus.
-  assert.match(src, /dmk-tip/, 'the explanation is a rendered bubble')
-  assert.match(src, /role: 'tooltip'/)
-  assert.doesNotMatch(src, /className: 'dmk-hint', title:/, 'do not fall back to the native title attribute')
 
-  // The bubble must start hidden and appear only on hover/focus. Shipping it
-  // without a hide rule left it rendered permanently — it looked like a layout
-  // bug because the text sat over the form all the time.
-  const tipRule = /\.dmk-tip\{([^}]*)\}/.exec(src)?.[1] ?? ''
-  assert.match(tipRule, /display:\s*none/, 'the bubble must be hidden by default')
-  assert.match(src, /\.dmk-hint:hover \.dmk-tip[^{]*\{[^}]*display:\s*block/, 'hover shows it')
-  assert.match(src, /\.dmk-hint:focus \.dmk-tip[^{]*\{[^}]*display:\s*block/, 'keyboard focus shows it')
-  // Anchoring must not use right:0, which measured left:-82px on the real page.
-  assert.doesNotMatch(src, /\.dmk-tip\{[^}]*right:\s*0/, 'right:0 pushes the bubble off the left edge')
+  // The preset selector was removed: it is a DSH mechanism, it needs no user
+  // input in the normal case, and a wrong value makes the nightly task fail to
+  // create with "Unknown agent preset". The config key still exists for anyone
+  // editing the file directly.
+  assert.doesNotMatch(src, /presetHint/, 'the preset field is no longer rendered')
+  assert.doesNotMatch(src, /field\('agentPreset'/, 'no preset input')
+  assert.doesNotMatch(src, /agentPreset: form\./, 'saving must not overwrite the stored preset')
 
-  // The scope switch carries its own explanation too.
-  assert.match(src, /scopeBlock/)
-  assert.match(src, /只对指定目录生效/)
+  // The extra-instructions field is the one knob that steers the curator, so it
+  // must say what it is for.
+  assert.match(src, /extraHint:/)
+  const hint = /extraHint: '((?:[^'\\]|\\.)*)'/.exec(src)?.[1] ?? ''
+  assert.ok(hint.length > 40, 'the explanation should be substantive')
+  assert.match(hint, /不要写|不用写|built in/i, 'it should say the format rules are already built in')
+  assert.match(hint, /留空|Empty/, 'and what leaving it blank does')
 })
 
 test('the primary button stays legible in both themes', async () => {
