@@ -361,6 +361,12 @@ test('the settings page explains what an empty preset means', async () => {
   assert.match(src, /presetHint:/)
   assert.match(src, /standard/, 'the hint should name the real default, not "the default"')
   assert.match(src, /dmk-hint/, 'the hint needs a visible affordance')
+  // A native title tooltip waits 1-2s in Electron and read as "the ? does nothing";
+  // the explanation must be a rendered bubble that shows on hover/focus.
+  assert.match(src, /dmk-tip/, 'the explanation is a rendered bubble')
+  assert.match(src, /role: 'tooltip'/)
+  assert.doesNotMatch(src, /className: 'dmk-hint', title:/, 'do not fall back to the native title attribute')
+
   // The scope switch carries its own explanation too.
   assert.match(src, /scopeBlock/)
   assert.match(src, /只对指定目录生效/)
