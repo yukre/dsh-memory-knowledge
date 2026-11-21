@@ -253,25 +253,34 @@ test('checkIsKnowledge refuses a rule a skill already owns, and spares facts', a
   assert.equal(looksLikeSkillRule('用户偏好结论前置，先说结论再展开', skill).copied, false)
 })
 
-test('the engine scans installed skills and caches the index', async () => {
+test('the engine scans skills for the session cross workspaces, and does not leak them', async () => {
   const { Store } = await import('../lib/store.js')
   const { Engine } = await import('../lib/engine.js')
   const { resolveConfig } = await import('../lib/config.js')
   const root = mkdtempSync(join(tmpdir(), 'mk-skills-'))
-  const skillsDir = join(root, 'skills')
-  mkdirSync(join(skillsDir, 'demo-skill'), { recursive: true })
-  writeFileSync(join(skillsDir, 'demo-skill', 'SKILL.md'), '---\nname: demo-skill\ndescription: "演示技能，做某件事"\n---\n\n步骤：先做 A 再做 B。\n')
-  const clock = { now: Date.now() }
-  const store = new Store(resolveConfig({ memoryRoot: root, skills: { linkTargets: [skillsDir] } }), { now: () => clock.now })
+  // Two independent workspaces, each with its own project skill.
+  const wsA = join(root, 'ws-a')
+  const wsB = join(root, 'ws-b')
+  for (const [ws, name] of [[wsA, 'project-a-skill'], [wsB, 'project-b-skill']]) {
+    mkdirSync(join(ws, '.agents', 'skills', name), { recursive: true })
+    writeFileSync(join(ws, '.agents', 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: "工作区专属技能"\n---\n\n步骤：先做 A 再做 B。\n`)
+  }
+  const store = new Store(resolveConfig({ memoryRoot: join(root, 'mk') }), { now: () => Date.now() })
   await store.open()
   const engine = new Engine(store, {})
-  const first = engine.installedSkills()
-  assert.equal(first.length, 1)
-  assert.equal(first[0].name, 'demo-skill')
-  assert.match(first[0].body, /先做 A 再做 B/)
-  // Cached: a second call within the window reuses the array.
-  assert.equal(engine.installedSkills(), first)
-  clock.now += 61_000
-  assert.notEqual(engine.installedSkills(), first, 'the index refreshes after a minute')
+
+  const names = ws => engine.installedSkills(ws).map(skill => skill.name)
+  assert.ok(names(wsA).includes('project-a-skill'), 'a session sees its own workspace skill')
+  assert.equal(names(wsA).includes('project-b-skill'), false, 'and never another workspace\'s')
+  assert.ok(names(wsB).includes('project-b-skill'))
+  assert.equal(names(wsB).includes('project-a-skill'), false)
+
+  // The full body is read, not a truncated prefix: the rule can sit anywhere.
+  const long = `---\nname: long-skill\ndescription: "长技能"\n---\n\n${'填充内容。'.repeat(2000)}\n最后一条规则：必须用 SSL_CERT_FILE 指定证书。\n`
+  mkdirSync(join(wsA, '.agents', 'skills', 'long-skill'), { recursive: true })
+  writeFileSync(join(wsA, '.agents', 'skills', 'long-skill', 'SKILL.md'), long)
+  engine.skillCache = undefined
+  const body = engine.installedSkills(wsA).find(skill => skill.name === 'long-skill')?.body ?? ''
+  assert.match(body, /SSL_CERT_FILE/, 'a rule near the end of a long skill is still indexed')
   store.close(); rmSync(root, { recursive: true, force: true })
 })
