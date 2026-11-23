@@ -223,34 +223,34 @@ test('mk_remember cannot store an agent role instruction (engine wiring)', async
   store.close(); rmSync(root, { recursive: true, force: true })
 })
 
-test('checkIsKnowledge refuses a rule a skill already owns, and spares facts', async () => {
-  const { checkIsKnowledge, looksLikeSkillRule, GateError } = await import('../lib/gate.js')
+test('a skill duplicate is reported, never refused', async () => {
+  const { checkIsKnowledge, skillAffinity, looksLikeSkillRule } = await import('../lib/gate.js')
   const skill = {
-    name: 'dsh-session-status',
-    description: 'Use when the user asks about the state of sessions, tasks, background jobs. Answers them by calling the local dsh-session-api HTTP surface (GET /sessions, /sessions/:id/state).',
-    body: '# 查询会话状态\n\n用户问「任务跑完了吗」这类状态问题时，调用本地 session-api 接口回答。\n先取端口和 token，再 GET /sessions 列出会话，然后 GET /sessions/:id/state 看运行状态。不要读磁盘缓存。',
+    name: 'plain-tech-copy',
+    description: '技术文案「说人话」写作规范与审校工具，面向架构图、方案文档',
+    body: '# 技术文案说人话\n\n读者为「准确」而读。\n\n## 0. 三条底线\n\n术语不弱化。',
   }
-  const base = { kind: 'method', claim: '', why: '理由足够长的一句话', scope: '边界', when: '场景', title: 'T', area: 'dsh' }
+  const base = { kind: 'method', claim: '', why: '理由足够长的一句话', scope: '边界', when: '场景', title: 'T', area: 'presentation' }
+  // Verbatim reuse — the one case looksLikeSkillRule does flag. It must still
+  // be allowed to write, because even a verbatim match is reported for a
+  // person to judge rather than blocked (a skill and a memory can legitimately
+  // both need the same sentence).
+  const claim = '技术文案说人话\n\n读者为「准确」而读。'
+  assert.equal(looksLikeSkillRule(claim, skill).copied, true, 'this is the flagged case')
 
-  // A verbatim copy is caught.
-  assert.throws(
-    () => checkIsKnowledge({ ...base, claim: skill.description.slice(0, 120) }, { skills: [skill] }),
-    (error) => error instanceof GateError && error.code === 'ALREADY_IN_SKILL',
-  )
-  // A paraphrase that keeps the subject and still reads as a procedure is caught too.
-  assert.throws(
-    () => checkIsKnowledge({ ...base, claim: '查询 DSH 会话状态时，调用本地 session-api 的 GET /sessions 接口，不要读磁盘缓存' }, { skills: [skill] }),
-    (error) => error instanceof GateError && error.code === 'ALREADY_IN_SKILL',
-  )
-  // A fact that merely mentions the same domain is not a rule copy.
-  assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim: 'CloudBase 平台版标价 1 万元每月，7 折即 7000 每月' }, { skills: [skill] }))
-  assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim: 'Token 工厂产业链的价值分配：微笑曲线两端最厚、中游制造最薄' }, { skills: [skill] }))
-  // No skills available is never a refusal.
-  assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim: skill.description.slice(0, 120) }, {}))
+  // Writing must succeed: a lexical match is not proof of duplication, and
+  // refusing on it would block real knowledge.
+  assert.doesNotThrow(() => checkIsKnowledge({ ...base, claim }, { skills: [skill] }))
 
-  // The helper reports why, so the message can name the skill.
-  assert.equal(looksLikeSkillRule(skill.description.slice(0, 120), skill).copied, true)
-  assert.equal(looksLikeSkillRule('用户偏好结论前置，先说结论再展开', skill).copied, false)
+  // But it must be surfaced for a person to judge.
+  const signal = skillAffinity(claim, skill)
+  assert.ok(signal !== undefined, 'the duplicate should be reported')
+  assert.match(signal.reason, /说人话|人话/, 'the reason should quote what matched')
+  assert.ok(signal.strength > 0)
+
+  // Unrelated notes stay out of the report.
+  assert.equal(skillAffinity('CloudBase 平台版标价 1 万元每月，7 折即 7000 每月', skill), undefined)
+  assert.equal(skillAffinity('Token 工厂产业链价值分配微笑曲线两端最厚', skill), undefined)
 })
 
 test('the engine scans skills for the session cross workspaces, and does not leak them', async () => {
@@ -472,4 +472,49 @@ test('the tooltip shows only on hover or focus, verified in a real browser', asy
     const { rmSync } = await import('node:fs')
     try { rmSync(file) } catch { /* already gone */ }
   }
+})
+
+test('the curator reports skill duplicates and records them as raised', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const root = mkdtempSync(join(tmpdir(), 'mk-suspect-'))
+  const skillsDir = join(root, 'skills')
+  mkdirSync(join(skillsDir, 'demo'), { recursive: true })
+  writeFileSync(join(skillsDir, 'demo', 'SKILL.md'), '---\nname: demo\ndescription: "定价口径的唯一真源"\n---\n\n# 定价说人话\n\n正文\n')
+
+  const store = new Store(resolveConfig({ memoryRoot: join(root, 'mk'), skills: { linkTargets: [skillsDir] } }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+  engine.suspectCwd = root
+
+  // Evidence must be a real session line or file line; use a file.
+  const notePath = join(root, 'note.md')
+  writeFileSync(notePath, '定价说人话：报价口径要统一\nToken 工厂产业链价值分配微笑曲线两端最厚\n')
+  const shared = {
+    kind: 'fact', why: '理由足够长的一句话用来通过why检查', scope: '边界', when: '场景',
+    pool: 'staging',
+  }
+  const dup = await engine.write({
+    ...shared, op: 'add', claim: '定价说人话：报价口径要统一，不要一处一个说法',
+    evidence: [{ kind: 'file', path: notePath, line: 1, quote: '定价说人话：报价口径要统一' }],
+    area: 'cloudbase', title: '定价说人话',
+  }, { via: 'curator', actor: 'curator' })
+  await engine.write({
+    ...shared, op: 'add', claim: 'Token 工厂产业链的价值分配微笑曲线两端最厚，中游制造最薄',
+    evidence: [{ kind: 'file', path: notePath, line: 2, quote: 'Token 工厂产业链价值分配微笑曲线两端最厚' }],
+    area: 'finance', title: '产业链',
+  }, { via: 'curator', actor: 'curator' })
+
+  const suspects = engine.suspectSkills()
+  assert.ok(suspects.length >= 1, 'the duplicate should be reported')
+  assert.ok(suspects.some(row => row.skill === 'demo'), 'and name the skill')
+  assert.equal(suspects.some(row => row.title === '产业链'), false, 'unrelated items stay out')
+
+  // Reporting must not change the library, and must not repeat every night.
+  assert.equal(store.graph.counts().staging, 2, 'nothing retired by reporting')
+  const unit = engine.suspectSkills()[0]
+  await engine.done({ unit: { kind: 'skill-suspect', ref: unit.ref } })
+  assert.equal(engine.suspectSkills().some(row => row.id === unit.id), false, 'raised once, not repeatedly')
+  store.close(); rmSync(root, { recursive: true, force: true })
 })
