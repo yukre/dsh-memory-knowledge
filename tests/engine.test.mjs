@@ -390,3 +390,39 @@ test('a crashed curation run does not leave the page saying 整理中 forever', 
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('a human-edit unit always carries a diff and text field, never undefined', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-hu-'))
+  mkdirSync(join(root, 'library', 'notes'), { recursive: true })
+  writeFileSync(join(root, 'library', 'notes', '手工.md'),
+    '# 手工\n> 何时用：x\n\n**结论**：手工写的\n\n**为什么**：理由够长\n\n**边界**：无\n')
+
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+  const unit = engine.pendingHumanEdit()
+  assert.ok(unit !== undefined, 'the hand-written file is queued as a human edit')
+
+  // A tool result carrying an undefined property is rejected by the host as
+  // "not lossless JSON". `record.diff` is absent for a whole-file add, so the
+  // unit shipped undefined and the curator could not process the edit at all.
+  assert.ok('diff' in unit, 'diff is present')
+  assert.notEqual(unit.diff, undefined, 'diff is never undefined')
+  assert.equal(unit.diff, null, 'and is null when there is nothing to diff')
+  assert.ok('text' in unit)
+  assert.notEqual(unit.text, undefined, 'text is never undefined')
+
+  // The same for a unit whose record has no rewrite flag: the old
+  // `a || b ? x : y` precedence returned the body for any record, regardless.
+  for (const value of [unit.diff, unit.text]) {
+    assert.ok(value === null || typeof value === 'string', 'both fields are null or a string')
+  }
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
