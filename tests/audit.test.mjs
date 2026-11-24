@@ -600,3 +600,33 @@ test('the snapshot lists the categories that hold material, even before promotio
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('every host call in the page is guarded, so a restart cannot freeze the buttons', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+  // fetch rejects when the host restarts or the socket drops. An unguarded
+  // `await api(...)` threw out of the handler, so the line after it — the one
+  // that clears the busy flag — never ran, and every button stayed disabled
+  // until the page was reloaded by hand.
+  const calls = [...src.matchAll(/await api\(([^)]*)\)/g)]
+  assert.ok(calls.length >= 4, `expected several host calls, found ${calls.length}`)
+
+  for (const match of calls) {
+    const before = src.slice(0, match.index)
+    // Inside a try block means the nearest `try {` comes after the nearest
+    // `catch` (or start of the enclosing handler) and its braces have not closed.
+    const tryAt = before.lastIndexOf('try {')
+    const catchAt = before.lastIndexOf('catch')
+    assert.ok(tryAt > catchAt, `an await api(${match[1].slice(0, 24)}) is outside a try block`)
+    // And that try block must still be open: count braces between them.
+    const between = before.slice(tryAt)
+    const open = (between.match(/{/g) ?? []).length
+    const close = (between.match(/}/g) ?? []).length
+    assert.ok(open > close, `an await api(${match[1].slice(0, 24)}) escaped its try block`)
+  }
+
+  // Each guarded handler must also clear its busy flag on the failure path,
+  // otherwise the button stays disabled even though nothing threw.
+  assert.match(src, /catch[\s\S]{0,200}(setBusy\(''\)|setBusy\(false\))/, 'the busy flag is cleared in catch/finally')
+})
