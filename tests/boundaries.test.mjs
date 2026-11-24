@@ -543,3 +543,46 @@ test('prompt: the curator extra instructions are bounded and cannot close the bl
   assert.equal(body.includes(closeTag), false, 'the extra text cannot close the curator block early')
   assert.ok(injected.trimEnd().endsWith(closeTag), 'and the real closing tag is still last')
 })
+
+test('an unreadable file is skipped, not fatal, and is still reported', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { probeFile, readIfExists } = await import('../lib/item.js')
+  const { mkdtempSync, writeFileSync, mkdirSync, chmodSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-unread-'))
+
+  // readIfExists answers "what does it say" for every caller, so any unreadable
+  // state must come back as absent rather than throwing: one EACCES used to take
+  // out an entire nightly run.
+  assert.equal(readIfExists(join(root, 'gone.md')), undefined)
+  const dir = join(root, 'library', 'notes')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'good.md'), '# 好文件\n> 何时用：x\n\n**结论**：正常内容\n')
+  const bad = join(dir, 'bad.md')
+  writeFileSync(bad, '# 坏文件\n> 何时用：x\n\n**结论**：读不了的内容\n')
+  chmodSync(bad, 0o000)
+  try {
+    assert.equal(readIfExists(bad), undefined, 'unreadable reads as absent')
+
+    // The scanner still has to tell the person, so it uses probeFile: a file that
+    // vanished is dropped quietly, one that is present but unreadable is surfaced.
+    assert.equal(probeFile(bad).reason, 'EACCES')
+    assert.deepEqual(probeFile(join(root, 'gone.md')), { missing: true })
+
+    // The files are already on disk, so open() scans them; scan again to observe
+    // this pass on its own.
+    const store = new Store(resolveConfig({ memoryRoot: root }), { logger: { info() {}, warn() {} } })
+    await store.open()
+    const summary = await store.scan()
+    assert.equal(store.graph.items().length, 1, 'the readable file lands')
+    assert.equal(summary.unreadable.length, 1, 'the unreadable one is reported')
+    assert.equal(summary.unreadable[0].path, bad)
+    assert.equal(summary.unreadable[0].reason, 'EACCES')
+    store.close()
+  } finally {
+    chmodSync(bad, 0o644)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
