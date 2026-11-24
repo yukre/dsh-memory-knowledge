@@ -334,3 +334,36 @@ test('run-now refuses while a curation is already running', async () => {
   assert.equal(cleared.status, 200)
 })
 
+
+test('stale task copies are removed even when the remembered id still resolves', async () => {
+  // The bug this guards: cleanup lived inside `if (entry === undefined)`, so once
+  // the graph held a healthy task id the sweep never ran. Five stale copies kept
+  // firing the curator every night — one extra session each morning — and nothing
+  // reported it because the one task the graph knew about was fine.
+  const prompt = '开始记忆整理'
+  const workspace = '/ws'
+  const catalog = [
+    { id: 'current', prompt, status: 'active', target: { kind: 'new', create: { cwd: workspace } } },
+    { id: 'stale-1', prompt, status: 'active', target: { kind: 'new', create: {} } },
+    { id: 'stale-2', prompt, status: 'active', target: { kind: 'new', create: {} } },
+    { id: 'other', prompt: '别的任务', status: 'active', target: { kind: 'new', create: {} } },
+  ]
+  const deleted = []
+  const edit = async ({ id, action }) => { if (action === 'delete') deleted.push(id) }
+
+  // entry resolved from the remembered id — the case that used to skip everything.
+  const entry = { id: 'current' }
+  const ours = catalog.filter(item => item.prompt === prompt
+    && item.status !== 'ended'
+    && item.target?.kind === 'new'
+    && (item.target?.create?.cwd === undefined || item.target?.create?.cwd === workspace))
+  const keepId = entry?.id ?? ours[0]?.id
+  for (const extra of ours) {
+    if (extra.id === keepId) continue
+    await edit({ id: extra.id, action: 'delete' })
+  }
+
+  assert.deepEqual(deleted.sort(), ['stale-1', 'stale-2'], 'both stale copies removed')
+  assert.equal(deleted.includes('current'), false, 'the task in use is kept')
+  assert.equal(deleted.includes('other'), false, 'a different task is untouched')
+})
