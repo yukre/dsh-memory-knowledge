@@ -586,3 +586,28 @@ test('an unreadable file is skipped, not fatal, and is still reported', async ()
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('fileFingerprint matches the parsed body and reports absence', async () => {
+  const { fileFingerprint } = await import('../lib/store.js')
+  const { parseItem } = await import('../lib/item.js')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-fp-'))
+
+  const file = join(root, 'a.md')
+  const body = '# 标题\n> 何时用：测试\n\n**结论**：普通内容\n\n**为什么**：理由\n\n**边界**：无\n'
+  writeFileSync(file, body)
+  assert.equal(fileFingerprint(file), parseItem(body).fingerprint, 'same digest as parsing the text')
+
+  // Two files with the same body share a fingerprint; a changed body does not.
+  const copy = join(root, 'b.md')
+  writeFileSync(copy, body)
+  assert.equal(fileFingerprint(copy), fileFingerprint(file))
+  writeFileSync(copy, `${body}\n多一行\n`)
+  assert.notEqual(fileFingerprint(copy), fileFingerprint(file))
+
+  assert.equal(fileFingerprint(join(root, 'missing.md')), undefined, 'absence is undefined, not a throw')
+
+  rmSync(root, { recursive: true, force: true })
+})
