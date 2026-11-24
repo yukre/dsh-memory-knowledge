@@ -559,3 +559,44 @@ test('the interface says release, not archive, because expiry deletes', async ()
   assert.equal(/过期归档/.test(engine), false)
   assert.match(engine, /过期释放/)
 })
+
+test('the snapshot lists the categories that hold material, even before promotion', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { snapshotText } = await import('../lib/prompt.js')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-areas-'))
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const note = join(root, 'n.md')
+  writeFileSync(note, '普通事实内容\n')
+  const add = (title, claim, area) => store.writeItem({
+    id: `mk_${Math.random().toString(36).slice(2, 12)}`,
+    path: join(root, `library/_staging/${area}/${title}.md`),
+    pool: 'staging', area, kind: 'fact', status: 'active', title, whenuse: '测试时',
+    fingerprint: 'x', machine_fingerprint: 'x', created_at: Date.now(), updated_at: Date.now(),
+    human_at: null, source_sessions: [], confirmed: false, last_loaded: null,
+  }, { title, when: '测试时', body: `**结论**：${claim}\n\n**为什么**：理由够长\n\n**边界**：无\n` })
+
+  add('甲', '云开发相关的普通事实内容甲', 'cloudbase')
+  add('乙', '金融分析相关的普通事实内容乙', 'finance')
+
+  // Nothing is promoted yet. A bare index of zero categories over a library that
+  // holds material reads as "nothing here", so the names are listed anyway.
+  assert.equal(store.graph.counts().memory, 0)
+  const areas = store.areas()
+  assert.deepEqual(areas.map(entry => entry.area).sort(), ['cloudbase', 'finance'])
+
+  const render = () => snapshotText({ tag: 'dmk', root, areas: store.areas(), preferences: [], directoryMaxChars: 400, profileMaxChars: 600, subagent: false })
+  const text = render()
+  assert.match(text, /- cloudbase/)
+  assert.match(text, /- finance/)
+  // Names only: a count would change the text whenever an item is added and cost
+  // the prompt cache on every request.
+  assert.equal(/\d+\s*条/.test(text.split('分类目录')[1].split('长期偏好')[0]), false, 'no live counts in the index')
+  assert.equal(render(), text, 'byte-identical across calls')
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
