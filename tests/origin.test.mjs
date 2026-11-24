@@ -174,3 +174,97 @@ test('promotion is gated by origin tier, not one flat number', async () => {
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('expiry releases unused items instead of archiving them', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-expire-'))
+  const note = join(root, 'n.md')
+  writeFileSync(note, '一条从来没人引用的普通事实\n')
+  const clock = Date.now()
+  const DAY = 86400000
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => clock })
+  await store.open()
+  const engine = new Engine(store, {})
+  const add = (title, claim) => engine.write({
+    op: 'add', kind: 'fact', claim, why: '理由足够长的一句话用来通过检查',
+    scope: '边界', when: '场景', area: 'notes', title, pool: 'staging',
+    evidence: [{ kind: 'file', path: note, line: 1, quote: '一条从来没人引用的普通事实' }],
+  }, { via: 'curator', actor: 'curator' })
+
+  const stale = await add('过期', '从来没人引用的普通事实内容甲')
+  const fresh = await add('新鲜', '刚刚写入的普通事实内容乙')
+  store.graph.sql('UPDATE items SET created_at = ? WHERE id = ?').run(clock - 61 * DAY, stale.id)
+  const stalePath = store.graph.item(stale.id).path
+
+  engine.expireStaging()
+
+  // Released, not archived: the row and the file are both gone, because an
+  // archived copy would keep sitting in the recall index while nobody reads it.
+  assert.equal(store.graph.item(stale.id), undefined, 'the item is released')
+  assert.equal(existsSync(stalePath), false, 'the file is removed too')
+  assert.equal(store.graph.counts().archive, 0, 'nothing was archived instead')
+
+  // The record survives in the changelog, which is what an audit needs after
+  // the item itself is gone.
+  const expired = store.changelog.all().filter(record => record.op === 'expire')
+  assert.equal(expired.length, 1)
+  assert.equal(expired[0].title, '过期')
+  assert.equal(expired[0].released, true)
+
+  assert.ok(store.graph.item(fresh.id) !== undefined, 'an unexpired item is untouched')
+
+  // Votes protect an item: something a session actually used is not released.
+  const used = await add('被引用过', '被其他会话引用过的普通事实内容丙')
+  store.graph.sql('UPDATE items SET created_at = ? WHERE id = ?').run(clock - 61 * DAY, used.id)
+  // addUse records the citation as pending; the curator closes it later with a
+  // verdict. Votes count only once it is accepted.
+  store.graph.addUse({ itemId: used.id, sessionId: 'session-other', seq: 1 }, clock)
+  store.graph.setUseVerdict(used.id, 'session-other', 'accepted')
+  engine.expireStaging()
+  assert.ok(store.graph.item(used.id) !== undefined, 'a cited item survives expiry')
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
+
+test('deleting an item clears the rows that referenced it', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-drop-'))
+  const note = join(root, 'n.md')
+  writeFileSync(note, '两个互相关联的普通事实内容\n')
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+  const add = (title, claim) => engine.write({
+    op: 'add', kind: 'fact', claim, why: '理由足够长的一句话用来通过检查',
+    scope: '边界', when: '场景', area: 'notes', title, pool: 'staging',
+    evidence: [{ kind: 'file', path: note, line: 1, quote: '两个互相关联的普通事实内容' }],
+  }, { via: 'curator', actor: 'curator' })
+
+  const left = await add('成本核算', '服务器成本按三年摊销计算而非一次性计入')
+  const right = await add('发布节奏', '每月第一个周二发布，避开月末结账')
+  engine.graph.addEdge({ from: left.id, to: right.id, type: 'related', by: 'curator' }, Date.now())
+  engine.graph.addUse({ itemId: left.id, sessionId: 'session-a', seq: 3 }, Date.now())
+  engine.graph.setUseVerdict(left.id, 'session-a', 'accepted')
+  assert.ok(engine.graph.uses(left.id).length > 0)
+  assert.ok(engine.graph.neighbors(left.id).length > 0)
+
+  store.dropItem(left.id)
+
+  // Nothing may keep pointing at the released id.
+  assert.equal(store.graph.item(left.id), undefined)
+  assert.equal(store.graph.uses(left.id).length, 0, 'uses are cleared')
+  assert.deepEqual(store.graph.neighbors(left.id), [], 'edges are cleared')
+  assert.equal(store.graph.neighbors(right.id).length, 0, 'and the surviving side too')
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
