@@ -5,12 +5,22 @@ import { originOf, votesRequired } from '../lib/origin.js'
 const session = (role, quote) => ({ kind: 'session', role, quote })
 
 test('origin: the person stating something is tier A, asking is tier B', () => {
-  assert.equal(originOf({ confirmedBy: 'user-requested', evidence: [] }).tier, 'A')
-  assert.equal(originOf({ confirmedBy: 'user-approved', evidence: [] }).tier, 'B')
+  // A label alone is not evidence: the writer is usually the curator (an agent),
+  // so declaring "user-requested" without the person's words proves nothing.
+  assert.equal(originOf({ confirmedBy: 'user-requested', evidence: [] }).tier, 'C')
+  assert.equal(originOf({ confirmedBy: 'user-approved', evidence: [] }).tier, 'C')
+  assert.equal(originOf({ confirmedBy: 'user-requested', evidence: [session('user', '记住这个')] }).tier, 'A')
+  assert.equal(originOf({ confirmedBy: 'user-requested', evidence: [{ kind: 'file', path: '/a.md' }] }).tier, 'C')
 
-  // Statements and decisions.
-  for (const quote of ['周报以后按四段写', '这个改成用 npm', '统一用中文', '只记交易型的买卖', '必须跑回归测试', '别再派给别人']) {
+  // Tier A is an explicit instruction to keep something — the only signal
+  // strong enough to skip validation.
+  for (const quote of ['记住这个：发布前必须跑回归测试', '以后都按四段式写周报', '别再派给别的会话了', '下次记得先查记忆库', '长期保留这条口径']) {
     assert.equal(originOf({ confirmedBy: 'verified', evidence: [session('user', quote)] }).tier, 'A', quote)
+  }
+  // An ordinary statement is NOT tier A: 「统一用中文」 may be about one project,
+  // and nothing in it says it should outlive that afternoon.
+  for (const quote of ['统一用中文', '这个改成用 npm', '周报以后按四段写', '只记交易型的买卖', '必须跑回归测试']) {
+    assert.equal(originOf({ confirmedBy: 'verified', evidence: [session('user', quote)] }).tier, 'B', quote)
   }
   // Questions are the person thinking, not concluding — 应该 inside a question is
   // exactly the confusion this tiering exists to remove.
@@ -24,15 +34,17 @@ test('origin: the person stating something is tier A, asking is tier B', () => {
 })
 
 test('origin: the threshold rises as the source weakens', () => {
-  // The person said "remember this": waiting for a citation contradicts the
-  // request that created the item.
-  assert.equal(votesRequired('A', 2), 0)
+  // Nothing here is zero: this function answers the citation route only.
+  // "记住这个" is a different route — mk_remember writes straight to memory and
+  // never reaches staging, so it never asks how many citations are needed.
+  assert.equal(votesRequired('A', 2), 1)
   assert.equal(votesRequired('B', 2), 1)
   assert.equal(votesRequired('C', 2), 1)
+  for (const tier of ['A', 'B', 'C', 'D']) assert.ok(votesRequired(tier, 2) > 0, tier)
   // A model's inference should be reached independently more than a person needs.
   assert.equal(votesRequired('D', 2), 3)
   // The configuration still moves the baseline.
-  assert.equal(votesRequired('A', 3), 0)
+  assert.equal(votesRequired('A', 3), 2)
   assert.equal(votesRequired('D', 3), 4)
 })
 
@@ -57,7 +69,9 @@ test('origin: a tier is read back from the recorded changelog', async () => {
     evidence: [{ kind: 'file', path: note, line: 1, quote: '统一用中文，代码和专有名词保留原文' }],
     confirmedBy: 'user-requested',
   }, { via: 'curator', actor: 'curator' })
-  assert.equal(engine.origin(fromPerson.id).tier, 'A')
+  // A file is the person's material, but it is not the person asking for this to
+  // be kept — and the curator cannot promote its own claim to tier A by label.
+  assert.equal(engine.origin(fromPerson.id).tier, 'C')
 
   const fromModel = await engine.write({
     op: 'add', kind: 'fact', claim: '微笑曲线两端最厚、中游制造最薄是产业链价值分配的规律',
@@ -127,8 +141,12 @@ test('promotion is gated by origin tier, not one flat number', async () => {
     evidence: [{ kind: 'file', path: note, line: 1, quote: '这个必须统一用中文表述，不要中英混写' }],
     confirmedBy: 'user-requested',
   }, { via: 'curator', actor: 'curator' })
-  assert.equal(engine.origin(stated.id).tier, 'A')
-  await engine.write({ op: 'promote', target: stated.id, reason: '用户明确陈述' }, { via: 'curator', actor: 'curator' })
+  assert.notEqual(engine.origin(stated.id).tier, 'A', 'a file-backed item never skips validation')
+  await assert.rejects(
+    engine.write({ op: 'promote', target: stated.id, reason: '试试' }, { via: 'curator', actor: 'curator' }),
+    (error) => error.code === 'NOT_ENOUGH_VOTES',
+    'the citation route always needs at least one citation',
+  )
 
   // Tier D: only a model's inference. The same zero citations must not promote,
   // and the error has to say which tier and how many votes it needs.
