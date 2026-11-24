@@ -645,3 +645,74 @@ test('the retired folder is migrated from _archive and empty categories are not 
   assert.deepEqual(memoryDirs, [], 'no category folder exists before anything is promoted')
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('merging a legacy _archive never drops a colliding file', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const doc = (title, claim) => `# ${title}\n> 何时用：x\n\n**结论**：${claim}\n\n**为什么**：理由够长\n\n**边界**：无\n`
+
+  const root = mkdtempSync(join(tmpdir(), 'mk-merge-'))
+  const lib = join(root, 'library')
+  // Both trees exist and the same slug holds different content. This happens
+  // when the folder was renamed on one machine but a second one still writes the
+  // old name; skipping the collision deleted an item the person could not get
+  // back, and then removed the folder it lived in.
+  mkdirSync(join(lib, '_archive', 'finance'), { recursive: true })
+  writeFileSync(join(lib, '_archive', 'finance', 'same.md'), doc('旧版', '旧内容'))
+  mkdirSync(join(lib, '_retired', 'finance'), { recursive: true })
+  writeFileSync(join(lib, '_retired', 'finance', 'same.md'), doc('新版', '新内容'))
+
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+
+  const files = readdirSync(join(lib, '_retired', 'finance')).sort()
+  assert.equal(files.length, 2, `both files survive, got ${files.join(', ')}`)
+  assert.ok(files.includes('same.md'))
+  assert.ok(files.some(name => name.includes('from-archive')), 'the colliding one is kept under a new name')
+
+  const titles = store.graph.items({ pool: 'archive' }).map(row => row.title).sort()
+  assert.deepEqual(titles, ['新版', '旧版'], 'both items are indexed')
+
+  // The emptied tree is removed, including the subdirectory shells that moving
+  // every file out leaves behind.
+  assert.equal(existsSync(join(lib, '_archive')), false, 'the legacy folder is gone')
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
+
+test('opening the library prunes rows that point at deleted items', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-prune-'))
+
+  mkdirSync(join(root, 'library', '_retired', 'a'), { recursive: true })
+  writeFileSync(join(root, 'library', '_retired', 'a', 'x.md'),
+    '# X\n> 何时用：q\n\n**结论**：内容\n\n**为什么**：理由够长\n\n**边界**：无\n')
+
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const row = store.graph.items()[0]
+  // Simulate what an older build left behind: rows referencing an item that was
+  // deleted before the cascade existed. Invisible until a vote count or an edge
+  // walk happens to include them.
+  store.graph.sql('INSERT INTO uses(item_id, session_id, seq, verdict, created_at) VALUES (?,?,?,?,?)')
+    .run('mk_gone', 'session-x', 1, 'accepted', Date.now())
+  store.graph.sql('INSERT INTO edges(from_id, to_id, type, by, created_at) VALUES (?,?,?,?,?)')
+    .run(row.id, 'mk_gone', 'related', 't', Date.now())
+  store.close()
+
+  const again = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await again.open()
+  const counts = (table, where) => again.graph.sql(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get().n
+  assert.equal(counts('uses', "item_id = 'mk_gone'"), 0, 'the orphan use is cleared')
+  assert.equal(counts('edges', "to_id = 'mk_gone'"), 0, 'the orphan edge is cleared')
+  // The real item is untouched.
+  assert.ok(again.graph.item(row.id) !== undefined)
+  again.close(); rmSync(root, { recursive: true, force: true })
+})
