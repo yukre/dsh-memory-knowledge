@@ -547,3 +547,15 @@ test('schedule reconcile adopts stale task copies instead of leaving them to fir
   assert.equal(ours[0].id, 'current')
   assert.deepEqual(ours.slice(1).map(item => item.id), ['stale-1', 'stale-2'])
 })
+
+test('the interface says release, not archive, because expiry deletes', async () => {
+  const { readFileSync } = await import('node:fs')
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const engine = readFileSync(new URL('../lib/engine.js', import.meta.url), 'utf8')
+  // Expiry now deletes the item; telling the person it "archives" would make
+  // them expect a recoverable copy that does not exist.
+  assert.equal(/过期归档|就归档/.test(client), false, 'the page must not promise an archive')
+  assert.match(client, /过期释放|就释放/)
+  assert.equal(/过期归档/.test(engine), false)
+  assert.match(engine, /过期释放/)
+})
