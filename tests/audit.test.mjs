@@ -518,3 +518,32 @@ test('the curator reports skill duplicates and records them as raised', async ()
   assert.equal(engine.suspectSkills().some(row => row.id === unit.id), false, 'raised once, not repeatedly')
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('schedule reconcile adopts stale task copies instead of leaving them to fire', async () => {
+  // Five tasks were created before this plugin recorded create.cwd, so a filter
+  // requiring an exact cwd match never recognised them: each kept firing the
+  // curator independently, six nightly runs at once.
+  const workspace = '/ws'
+  const prompt = '开始记忆整理'
+  const matches = item => item.prompt === prompt
+    && item.status !== 'ended'
+    && item.target?.kind === 'new'
+    && (item.target?.create?.cwd === undefined || item.target?.create?.cwd === workspace)
+
+  const catalog = [
+    { id: 'stale-1', prompt, status: 'active', target: { kind: 'new', create: {} } },
+    { id: 'stale-2', prompt, status: 'active', target: { kind: 'new', create: {} } },
+    { id: 'current', prompt, status: 'active', target: { kind: 'new', create: { cwd: workspace } } },
+    { id: 'other', prompt: '别的任务', status: 'active', target: { kind: 'new', create: {} } },
+    { id: 'ended', prompt, status: 'ended', target: { kind: 'new', create: {} } },
+    { id: 'elsewhere', prompt, status: 'active', target: { kind: 'new', create: { cwd: '/other' } } },
+  ]
+  const ours = catalog.filter(matches)
+  assert.deepEqual(ours.map(item => item.id), ['stale-1', 'stale-2', 'current'])
+
+  // The most complete declaration is kept, so the survivor does not need editing
+  // again on the next reconcile.
+  ours.sort((a, b) => (b.target?.create?.cwd === undefined ? 0 : 1) - (a.target?.create?.cwd === undefined ? 0 : 1))
+  assert.equal(ours[0].id, 'current')
+  assert.deepEqual(ours.slice(1).map(item => item.id), ['stale-1', 'stale-2'])
+})
