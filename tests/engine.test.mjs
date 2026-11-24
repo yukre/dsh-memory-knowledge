@@ -353,3 +353,40 @@ test('a memory created from speech is not a manual edit, so it does not lock its
   assert.equal(second.id, first.id, 'the follow-up correction is accepted')
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('a crashed curation run does not leave the page saying 整理中 forever', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-running-'))
+  let clock = Date.now()
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => clock })
+  await store.open()
+  const engine = new Engine(store, {})
+
+  assert.equal(engine.status().running, false, 'idle by default')
+
+  // A run starts and then dies — beginRun set the marker, next() never reached
+  // done, so nothing cleared it. This is what left the settings page showing
+  // 整理中… with no curator actually running.
+  engine.beginRun()
+  assert.equal(engine.status().running, true, 'a fresh run reads as running')
+
+  // Still within the window: reported as running (a real run can take a while).
+  clock += 30 * 60 * 1000
+  assert.equal(engine.status().running, true, 'within the window it still counts')
+
+  // Past the window with no completion: not running any more.
+  clock += 40 * 60 * 1000
+  assert.equal(engine.status().running, false, 'a stale marker expires instead of hanging')
+
+  // The schedule service's own flag wins when it is available.
+  assert.equal(engine.isRunning({ executing: true }), true, 'the service knows better than the marker')
+  assert.equal(engine.isRunning({ executing: false, windowMs: 10 * 365 * 24 * 3600 * 1000 }), false,
+    'an explicit "not executing" overrides a fresh marker')
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
