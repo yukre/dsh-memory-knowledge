@@ -8,7 +8,7 @@ import {
   newId, isId, normalize, fingerprint, parseItem, composeItem, stampId, composeSkill, slugify,
 } from '../lib/item.js'
 import { myers, inlineDiff, renderDiff } from '../lib/diff.js'
-import { tokenize, jaccard, SearchIndex } from '../lib/search.js'
+import { tokenize, jaccard, SearchIndex, stripQuestionWords } from '../lib/search.js'
 import { resolveConfig } from '../lib/config.js'
 
 test('ids have the expected grammar and are distinct', () => {
@@ -131,4 +131,26 @@ test('config fills defaults and rejects dangerous values', () => {
   assert.ok(cfg.library.endsWith('memory-knowledge/library'))
   assert.ok(warnings.length >= 3)
   assert.equal(resolveConfig({ injectTag: 'kb_mem' }).injectTag, 'kb_mem')
+})
+
+test('search: question framing does not outrank the subject', () => {
+  const index = new SearchIndex()
+  const add = (id, title) => index.put(id, { title, when: '', area: '', body: '' })
+  add('weekly-1', '周报收录门槛：只收 P0/P1')
+  add('weekly-2', '周报收入：只写一个总值折后实收')
+  add('writing-1', '怎么写技术文档：让 Agent 越来越懂你')
+  add('writing-2', '怎么写周报的模板与禁忌')
+  add('other-1', '完全无关的条目')
+
+  // Without stripping, 「怎么写」 carries more IDF than 周报 and retrieves the
+  // writing note. With it, the subject decides.
+  const hits = index.search('周报怎么写', { limit: 3 })
+  assert.ok(hits.length >= 2)
+  assert.match(hits[0].id, /^weekly-/, `expected 周报 entries first, got ${hits[0].id}`)
+
+  assert.equal(stripQuestionWords('周报怎么写'), '周报')
+  assert.equal(stripQuestionWords('记忆插件怎么用'), '记忆插件 用')
+  // A query made only of question words has to survive untouched.
+  assert.equal(stripQuestionWords('为什么'), '为什么')
+  assert.equal(stripQuestionWords('？'), '？')
 })
