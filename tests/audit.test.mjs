@@ -671,3 +671,51 @@ test('a removed item still names itself in the change history', async () => {
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('the change history reports an undo as what it undid, and never claims a missing diff', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-hist-'))
+  const note = join(root, 'n.md')
+  writeFileSync(note, '这是一条足够长的依据原话用于校验\n')
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+
+  const item = await engine.write({
+    op: 'add', kind: 'fact', claim: '一条会被更新的普通事实内容',
+    why: '理由足够长的一句话用来通过检查', scope: '边界', when: '场景',
+    area: 'notes', title: '历史测试条目', pool: 'staging',
+    evidence: [{ kind: 'file', path: note, line: 1, quote: '这是一条足够长的依据原话用于校验' }],
+  }, { via: 'curator', actor: 'curator' })
+  const updateRecord = store.changelog.all().filter(r => r.item === item.id && r.op === 'add').pop()
+  await engine.write({
+    op: 'update', target: item.id, kind: 'fact', claim: '一条被更新过的普通事实内容',
+    why: '理由足够长的一句话用来通过检查', scope: '边界', when: '场景',
+    area: 'notes', title: '历史测试条目',
+    evidence: [{ kind: 'file', path: note, line: 1, quote: '这是一条足够长的依据原话用于校验' }],
+  }, { via: 'curator', actor: 'curator' })
+  const update = store.changelog.all().filter(r => r.item === item.id && r.op === 'update').pop()
+  await engine.undo({ change: update.change }, { actor: 'human' })
+
+  const history = engine.status().recent
+  const undoRecord = history.find(entry => entry.op === 'undo')
+  assert.ok(undoRecord !== undefined, 'the undo is in history')
+  // 「撤销 · 整理员」 does not tell a reader whether an edit was rolled back or a
+  // confirmation dropped.
+  assert.equal(undoRecord.undid, 'update', 'an undo names the op it reversed')
+
+  // hasDiff was derived from `record.diff`, which is essentially never stored —
+  // diffOf() computes it from the version history instead. Reporting hasDiff
+  // claimed "no diff" for records whose 看改动 renders fine.
+  for (const entry of history) {
+    assert.equal('hasDiff' in entry, false, 'no field claims a diff is missing when it is computed on demand')
+  }
+  assert.equal(typeof updateRecord.change, 'string')
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
