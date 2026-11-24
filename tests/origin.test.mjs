@@ -268,3 +268,40 @@ test('deleting an item clears the rows that referenced it', async () => {
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('a long title still matches a redirect that names it', async () => {
+  // A ratio-only test failed here: 「平台版标价 1 万元/月，7 折即 7000/月，查订单
+  // 要用 UIN」shares four terms with a redirect naming it exactly, which is 33% of
+  // a twelve-term title — under any sane threshold, so the feature looked dead.
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-long-'))
+  const note = join(root, 'n.md')
+  writeFileSync(note, '平台版标价相关的普通事实内容\n')
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+  const item = await engine.write({
+    op: 'add', kind: 'fact',
+    claim: '平台版标价 1 万元每月，7 折即 7000 每月，查订单要用 UIN',
+    why: '报价和订单查询都按这个口径来，之前用客户名查错过', scope: '查客户平台版时',
+    when: '报平台版价格时', area: 'cloudbase',
+    title: '平台版标价 1 万元/月，7 折即 7000/月，查订单要用 UIN', pool: 'staging',
+    evidence: [{ kind: 'file', path: note, line: 1, quote: '平台版标价相关的普通事实内容' }],
+  }, { via: 'curator', actor: 'curator' })
+
+  const hits = engine.reversalTargets('不对，平台版标价改成 8000，之前的不算', 3)
+  assert.ok(hits.some(hit => hit.row.id === item.id), 'a redirect naming the long title is found')
+
+  // Rewording that only shares the generic opener (平台/台版) is NOT a match:
+  // 「定价」 and 「标价」 are different words, and guessing across that gap would
+  // archive items on coincidence.
+  const weak = engine.reversalTargets('之前说的不算，平台版定价不是一万', 3)
+  assert.equal(weak.some(hit => hit.row.id === item.id), false, 'a vague redirect does not fire')
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
