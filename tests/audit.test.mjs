@@ -630,3 +630,44 @@ test('every host call in the page is guarded, so a restart cannot freeze the but
   // otherwise the button stays disabled even though nothing threw.
   assert.match(src, /catch[\s\S]{0,200}(setBusy\(''\)|setBusy\(false\))/, 'the busy flag is cleared in catch/finally')
 })
+
+test('a removed item still names itself in the change history', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-title-'))
+  const note = join(root, 'n.md')
+  writeFileSync(note, '这是一条足够长的依据原话用于校验\n')
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+
+  const item = await engine.write({
+    op: 'add', kind: 'fact', claim: '一条会被作废并释放的普通事实内容',
+    why: '理由足够长的一句话用来通过检查', scope: '边界', when: '场景',
+    area: 'notes', title: '会被作废的条目', pool: 'staging',
+    evidence: [{ kind: 'file', path: note, line: 1, quote: '这是一条足够长的依据原话用于校验' }],
+  }, { via: 'curator', actor: 'curator' })
+  await engine.write({ op: 'retire', target: item.id, reason: '测试作废' }, { via: 'curator', actor: 'human' })
+
+  const history = engine.status().recent
+  const retireRecord = history.find(entry => entry.op === 'retire' && entry.item === item.id)
+  assert.ok(retireRecord !== undefined, 'the retire shows in history')
+  // The row is gone from items after release; without a title in the record the
+  // history line rendered as just 「作废 · 你」 with nothing naming the entry.
+  assert.equal(retireRecord.title, '会被作废的条目', 'the retired title travels with the record')
+
+  // Body-changing ops can offer a diff; state-only ops must not, or 看改动 opens
+  // an empty view reading "（这次改动没有可显示的差异）".
+  assert.equal(retireRecord.canDiff, false, 'retire has no body change to show')
+  assert.equal(retireRecord.canUndo, true, 'but it can still be undone')
+  for (const op of ['add', 'update']) {
+    const record = history.find(entry => entry.op === op)
+    if (record !== undefined) assert.equal(record.canDiff, true, `${op} can show a diff`)
+  }
+
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
