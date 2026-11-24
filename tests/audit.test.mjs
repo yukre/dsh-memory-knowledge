@@ -719,3 +719,20 @@ test('the change history reports an undo as what it undid, and never claims a mi
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('the diff view mutes Markdown syntax instead of showing it raw', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+  // Items are stored as Markdown. Rendering them verbatim in a pre block made
+  // 「**结论**：…」 the first thing the eye hit on every change.
+  assert.match(src, /function markdownLine\(/, 'lines are decorated before display')
+  assert.match(src, /dmk-md-mark/, 'the syntax markers get their own class')
+  assert.match(src, /dmk-md-rule/, 'horizontal rules too')
+  assert.match(src, /\.dmk-md-mark\{opacity:\.35\}/, 'and the class is styled, not just applied')
+
+  // The characters stay in the output: a diff that silently reformatted its own
+  // source would no longer match the file it claims to describe.
+  assert.ok(src.includes('(\\*\\*|__|`)'), 'emphasis delimiters are still matched, only dimmed')
+  assert.match(src, /DiffText/, 'the change marks keep their own rendering path')
+})
