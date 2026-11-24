@@ -611,3 +611,37 @@ test('fileFingerprint matches the parsed body and reports absence', async () => 
 
   rmSync(root, { recursive: true, force: true })
 })
+
+test('the retired folder is migrated from _archive and empty categories are not pre-created', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-migrate-'))
+
+  // A library written by the previous version: the retired folder is `_archive`.
+  const legacy = join(root, 'library', '_archive', 'finance')
+  mkdirSync(legacy, { recursive: true })
+  writeFileSync(join(legacy, '旧条目.md'), '# 旧条目\n> 何时用：x\n\n**结论**：一条已被作废的内容\n\n**为什么**：理由\n\n**边界**：无\n')
+
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+
+  assert.equal(existsSync(join(root, 'library', '_retired')), true, 'the folder is renamed')
+  assert.equal(existsSync(join(root, 'library', '_archive')), false, 'the old folder is gone')
+  assert.equal(existsSync(join(root, 'library', '_retired', 'finance', '旧条目.md')), true, 'contents moved with it')
+
+  // No row may still point at the old location.
+  for (const row of store.graph.items({ pool: 'archive' })) {
+    assert.equal(row.path.includes('/_archive/'), false, `row ${row.id} still points at _archive`)
+  }
+
+  // An unused memory category must not appear as an empty folder: that is how
+  // `preferences/` showed up holding nothing but a README.
+  const memoryDirs = readdirSync(join(root, 'library'), { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && !entry.name.startsWith('_') && entry.name !== 'skills')
+    .map(entry => entry.name)
+  assert.deepEqual(memoryDirs, [], 'no category folder exists before anything is promoted')
+  store.close(); rmSync(root, { recursive: true, force: true })
+})

@@ -331,7 +331,7 @@ test('moveItem between pools keeps the id and the body', async () => {
   const moved = store.moveItem(a.id, 'archive')
   assert.equal(moved.id, a.id)
   assert.equal(moved.pool, 'archive')
-  assert.ok(moved.path.includes('_archive'))
+  assert.ok(moved.path.includes('_retired'))
   assert.equal(parseItem(readFileSync(moved.path, 'utf8')).body, body)
 })
 
