@@ -367,3 +367,39 @@ test('stale task copies are removed even when the remembered id still resolves',
   assert.equal(deleted.includes('current'), false, 'the task in use is kept')
   assert.equal(deleted.includes('other'), false, 'a different task is untouched')
 })
+
+test('finished one-shot tasks are cleaned up, the recurring one is kept', async () => {
+  // What this models: five tasks scheduled for 2026-11-18 with `COUNT=1`
+  // (already fired, never to run again) plus one daily task. The stored records
+  // carry no `target` field at all, so a filter on `target.kind` matched none of
+  // them and the leftovers accumulated forever — while only the daily task was
+  // actually producing curator sessions (six sessions over six nights, one each).
+  const prompt = '开始记忆整理'
+  const workspace = '/ws'
+  const catalog = [
+    { id: 'done-1', prompt, rrule: 'DTSTART;TZID=Asia/Shanghai:20261118T123800\nRRULE:FREQ=DAILY;COUNT=1', scheduledAt: '2026-11-18T04:38:00.000Z' },
+    { id: 'done-2', prompt, rrule: 'DTSTART;TZID=Asia/Shanghai:20261118T124750\nRRULE:FREQ=DAILY;COUNT=1', scheduledAt: '2026-11-18T04:47:50.000Z' },
+    { id: 'daily', prompt, kind: 'daily', rrule: '', time: '00:05:00.000', scheduledAt: '2026-11-24T16:05:00.000Z', target: { kind: 'new', create: { cwd: workspace } } },
+    { id: 'other', prompt: '别的任务', rrule: 'FREQ=DAILY;COUNT=1', scheduledAt: '2026-11-18T04:00:00.000Z' },
+  ]
+
+  const finished = item => {
+    const rrule = String(item.rrule ?? '')
+    return /COUNT=1(;|$)/i.test(rrule) && Number.isFinite(Date.parse(item.scheduledAt ?? ''))
+  }
+  const ours = catalog.filter(item => item.prompt === prompt
+    && item.status !== 'ended'
+    && (item.target === undefined || item.target?.kind === 'new')
+    && (item.target?.create?.cwd === undefined || item.target?.create?.cwd === workspace)
+    && !finished(item))
+  const removable = catalog.filter(item => item.prompt === prompt && finished(item))
+
+  assert.deepEqual(ours.map(item => item.id), ['daily'], 'only the recurring task stays')
+  assert.deepEqual(removable.map(item => item.id).sort(), ['done-1', 'done-2'], 'finished ones are removed')
+  assert.equal(removable.some(item => item.id === 'other'), false, 'a different task is untouched')
+
+  // Guard the shape of the real data: a task that somehow has no rrule and no
+  // target must not be swept just because it is unreadable.
+  const opaque = { id: 'opaque', prompt, scheduledAt: '2026-11-18T04:00:00.000Z' }
+  assert.equal(finished(opaque), false, 'no rrule means not proven finished')
+})
