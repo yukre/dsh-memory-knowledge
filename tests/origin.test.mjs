@@ -105,8 +105,10 @@ test('a reversal segment names the items it appears to overturn', async () => {
     evidence: [{ kind: 'file', path: note, line: 1, quote: '发布前必须跑完整的回归测试套件' }],
   }, { via: 'curator', actor: 'curator' })
 
-  // A reversal that shares real vocabulary is found…
-  const hits = engine.reversalTargets('不对，发布前改成只跑改动相关的回归测试套件就行了，完整跑太慢', 3)
+  // A reversal naming the subject is found. Scoring runs against the title:
+  // against the body, a 40-character title inside a 1500-character body yields
+  // ~167 terms, so even an exact subject match covered 5% and never fired.
+  const hits = engine.reversalTargets('不对，发布前跑回归测试这条改成只跑改动相关的用例就行了', 3)
   assert.equal(hits.length, 1)
   assert.match(hits[0].row.title, /回归测试/)
   assert.ok(hits[0].shared.length >= 3)
