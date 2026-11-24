@@ -313,3 +313,43 @@ test('skill upgrade needs evidence from three sessions and links back to its sou
   assert.ok(store.graph.neighbors(skill.id).some(edge => edge.type === 'derived-from' && edge.other === method.id))
   assert.equal(store.graph.tombstones().some(stone => stone.id === method.id), false, 'an upgraded method is not a retired truth')
 })
+
+test('a memory created from speech is not a manual edit, so it does not lock itself', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-lock-'))
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const sessions = new Map([['s1', [
+    { type: 'turn/start', seq: 1, time: 1000, data: {} },
+    { type: 'user/message', seq: 2, time: 2000, data: { content: [{ type: 'text', text: '记住：部署前必须过检查清单' }], source: { kind: 'user' } } },
+    { type: 'user/message', seq: 4, time: 4000, data: { content: [{ type: 'text', text: '再补一条，部署前还要做回滚演练' }], source: { kind: 'user' } } },
+    { type: 'turn/end', seq: 5, time: 5000, data: {} },
+  ]]])
+  const engine = new Engine(store, {
+    sessionQuery: () => ({ readSession: async id => ({ events: sessions.get(id) }) }),
+    sessionTitle: async () => 't',
+  })
+  const first = await engine.remember({
+    kind: 'method', claim: '部署前必须过检查清单',
+    why: '之前漏过检查出过事故所以要固化', scope: '任何部署前', when: '准备部署时',
+    area: 'dsh', title: '部署检查',
+  }, { sessionId: 's1' })
+
+  // human_at means a hand edit. A spoken sentence is not one: stamping it here
+  // made checkHumanLock refuse the very next correction as LOCKED, so the person
+  // could state something and then be unable to amend it.
+  assert.equal(store.graph.item(first.id).human_at, null, 'a spoken memory is not a hand edit')
+
+  const second = await engine.remember({
+    kind: 'method', claim: '部署前必须过检查清单并做回滚演练',
+    why: '补充回滚演练这一环，之前只过清单不够', scope: '任何部署前', when: '准备部署时',
+    area: 'dsh', title: '部署检查', target: first.id, resolution: 'update',
+  }, { sessionId: 's1' })
+  assert.equal(second.id, first.id, 'the follow-up correction is accepted')
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
