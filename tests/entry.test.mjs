@@ -405,3 +405,32 @@ test('finished one-shot tasks are cleaned up, the recurring one is kept', async 
   const opaque = { id: 'opaque', prompt, scheduledAt: '2026-11-18T04:00:00.000Z' }
   assert.equal(finished(opaque), false, 'no rrule means not proven finished')
 })
+
+test('a snapshot stored by an older format is regenerated, not reused', async () => {
+  const cfg = { memoryRoot: root, skills: { linkTargets: [join(root, 'links')] } }
+  apply(host.ctx, cfg)
+  await settle(200)
+  const agent = makeAgent(host, { id: 's-old', cwd: '/tmp/mk-acceptance' })
+  await host.ctx.emit('agent/created', { agent })
+  const current = host.sections.find(section => section.agent === 's-old').text()
+
+  // What sessions opened before the directory was removed have stored: the old
+  // text, with no format field.
+  for (const dispose of host.effects.splice(0)) { try { dispose?.() } catch { /* ignore */ } }
+  await settle(50)
+  const { openGraph } = await import('../lib/graph.js')
+  const graph = await openGraph(join(root, 'meta', 'graph.sqlite'))
+  graph.set('snapshot:s-old', { text: '<dmk>\n分类目录（只列第一层，内容用 mk_recall 查）：\n- cloudbase\n</dmk>', at: Date.now() })
+  graph.close()
+
+  const reloaded = makeHost()
+  const kept = makeAgent(reloaded, { id: 's-old', cwd: '/tmp/mk-acceptance' })
+  reloaded.ctx.agents.list = () => [kept]
+  host = reloaded
+  apply(reloaded.ctx, cfg)
+  await settle(400)
+  const again = reloaded.sections.find(section => section.agent === 's-old')
+  assert.ok(again, 'the session still gets a snapshot')
+  assert.equal(again.text(), current, 'the outdated stored text is replaced by the current format')
+  assert.doesNotMatch(again.text(), /分类目录/)
+})

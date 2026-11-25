@@ -772,3 +772,29 @@ test('a shared word with a skill description is not reported as a duplicate', as
   assert.ok(signal !== undefined, 'the duplicate is reported')
   assert.match(signal.reason, /最长相同片段/)
 })
+
+test('the settings cards count each item once and count every pending hand edit', async () => {
+  const { resolveConfig } = await import('../lib/config.js')
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const root = mkdtempSync(join(tmpdir(), 'mk-cards-'))
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+  // Three hand-written files: three pending edits, not "1".
+  for (const name of ['甲', '乙', '丙']) {
+    mkdirSync(join(root, 'library', 'notes'), { recursive: true })
+    writeFileSync(join(root, 'library', 'notes', `${name}.md`), `# ${name}\n> 何时用：x\n\n**结论**：手写的${name}\n\n**为什么**：理由够长\n\n**边界**：无\n`)
+  }
+  // And a skill.
+  mkdirSync(join(root, 'library', 'skills', 'demo'), { recursive: true })
+  writeFileSync(join(root, 'library', 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: "一个演示 skill"\n---\n\n# demo\n\n步骤。\n')
+  await store.scan()
+
+  const status = engine.status()
+  // Three notes and one skill, all added by hand: four edits wait for review.
+  assert.equal(status.pendingHumanEdits, 4, 'every pending hand edit is counted')
+  assert.equal(status.skills, 1)
+  assert.equal(status.counts.memory, 3, 'the skill is not also counted as a memory item')
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
