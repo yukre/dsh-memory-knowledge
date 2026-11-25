@@ -165,3 +165,20 @@ test('the snapshot tells the agent to recall whenever past conclusions might app
   assert.match(text, /例如提到客户、产品、项目、人名/, 'the old triggers remain as examples')
   assert.match(text, /拿不准要不要查时，查/, 'ties break toward looking')
 })
+
+test('an evidence quote matches whether or not it carries Markdown emphasis', async () => {
+  const { checkEvidence } = await import('../lib/gate.js')
+  // The 2026-11-25 run was rejected three times with EVIDENCE_NOT_FOUND because
+  // the session said 「**结论**：先定止损」 and the curator quoted 「结论：先定止损」
+  // (or the reverse). The words match; the asterisks are formatting.
+  const lookup = {
+    sessionText: async () => ({ text: '我的看法：**结论**：先定止损，再谈仓位', role: 'user', time: 1 }),
+    fileLines: async () => ['`止损` 要在 __买入前__ 定好'],
+  }
+  await checkEvidence([{ kind: 'session', sessionId: 's', seq: 1, quote: '结论：先定止损' }], lookup)
+  await checkEvidence([{ kind: 'session', sessionId: 's', seq: 1, quote: '**结论**：先定止损' }], lookup)
+  await checkEvidence([{ kind: 'file', path: '/p', line: 1, quote: '止损要在买入前定好' }], lookup)
+  // A quote that is not there is still refused.
+  await assert.rejects(checkEvidence([{ kind: 'session', sessionId: 's', seq: 1, quote: '结论：先加仓' }], lookup),
+    error => error.code === 'EVIDENCE_NOT_FOUND')
+})

@@ -356,7 +356,7 @@ test('a memory created from speech is not a manual edit, so it does not lock its
 
 test('a crashed curation run does not leave the page saying 整理中 forever', async () => {
   const { Store } = await import('../lib/store.js')
-  const { Engine } = await import('../lib/engine.js')
+  const { Engine, RUN_WINDOW_MS } = await import('../lib/engine.js')
   const { resolveConfig } = await import('../lib/config.js')
   const { mkdtempSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
@@ -375,18 +375,23 @@ test('a crashed curation run does not leave the page saying 整理中 forever', 
   engine.beginRun()
   assert.equal(engine.status().running, true, 'a fresh run reads as running')
 
-  // Still within the window: reported as running (a real run can take a while).
-  clock += 30 * 60 * 1000
+  // Still within the window: reported as running (a real run can take a while;
+  // 2026-11-25's took 37 minutes).
+  clock += RUN_WINDOW_MS - 60_000
   assert.equal(engine.status().running, true, 'within the window it still counts')
 
   // Past the window with no completion: not running any more.
-  clock += 40 * 60 * 1000
+  clock += 2 * 60_000
   assert.equal(engine.status().running, false, 'a stale marker expires instead of hanging')
 
   // The schedule service's own flag wins when it is available.
   assert.equal(engine.isRunning({ executing: true }), true, 'the service knows better than the marker')
-  assert.equal(engine.isRunning({ executing: false, windowMs: 10 * 365 * 24 * 3600 * 1000 }), false,
-    'an explicit "not executing" overrides a fresh marker')
+  // `executionActive` is never set for a task whose target is a new session per
+  // run — which the curator task is — so its absence must not end a live run.
+  // Treating it as authoritative cleared the marker mid-run on 2026-11-25 and
+  // the run's statistics were lost.
+  engine.beginRun()
+  assert.equal(engine.isRunning({ executing: false }), true, 'an absent service flag does not end a fresh run')
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })
@@ -424,5 +429,54 @@ test('a human-edit unit always carries a diff and text field, never undefined', 
     assert.ok(value === null || typeof value === 'string', 'both fields are null or a string')
   }
 
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
+
+test('every unit kind next() emits can be submitted, and a run with a skill-suspect reaches done', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine, UNIT_KINDS } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { registerTools } = await import('../lib/tools.js')
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+
+  // Every kind constructed in the engine source must be in UNIT_KINDS, and the
+  // tool schema must accept exactly that list. They drifted once: next() handed
+  // out `skill-suspect`, mk_done's enum rejected it, and the 2026-11-25 run spent
+  // its tail retrying other kinds and never reached done.
+  const source = readFileSync(new URL('../lib/engine.js', import.meta.url), 'utf8') + readFileSync(new URL('../lib/importer.js', import.meta.url), 'utf8')
+  for (const kind of ['human-edit', 'dispute', 'import', 'promote', 'skill-suspect']) {
+    assert.ok(source.includes(`kind: '${kind}'`), `${kind} is emitted`)
+    assert.ok(UNIT_KINDS.includes(kind), `${kind} is accepted`)
+  }
+  const tools = new Map()
+  registerTools({ tools: { register: def => { tools.set(def.name, def); return () => {} } }, effect: fn => fn() }, def => def,
+    { engine: () => undefined, inScope: () => true, isSubagent: () => false, sessionOf: () => 's', budget: () => ({}) })
+  assert.deepEqual(tools.get('mk_done').parameters.unit.properties.kind.enum, [...UNIT_KINDS], 'the schema accepts what next() emits')
+
+  // Replay the failure end to end: a staging item that matches an installed skill.
+  const root = mkdtempSync(join(tmpdir(), 'mk-suspect-'))
+  mkdirSync(join(root, 'skills', 'demo'), { recursive: true })
+  writeFileSync(join(root, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: "定价口径的唯一真源，报价统一"\n---\n\n# 定价说人话\n\n报价口径要统一，不要一处一个说法；同一客户的数字只认一份。\n')
+  const store = new Store(resolveConfig({ memoryRoot: root, skills: { linkTargets: [join(root, 'skills')] } }), { now: () => Date.now() })
+  await store.open()
+  const engine = new Engine(store, {})
+  engine.suspectCwd = root
+  const note = join(root, 'n.md'); writeFileSync(note, '这是一条足够长的依据原话用于校验\n')
+  await engine.write({ op: 'add', kind: 'fact', claim: '定价说人话：报价口径要统一，不要一处一个说法', why: '口径不一致会让客户收到矛盾数字，之前踩过坑', scope: '报价时', when: '写报价前', area: 'cloudbase', title: '定价说人话', pool: 'staging', evidence: [{ kind: 'file', path: note, line: 1, quote: '这是一条足够长的依据原话用于校验' }] }, { via: 'curator', actor: 'curator' })
+
+  engine.beginRun()
+  const first = await engine.next({ charsLeft: 0, sessionsLeft: 0 })
+  assert.equal(first.unit?.kind, 'skill-suspect')
+
+  // Submitting a different kind is refused, not acknowledged: an ok:true here is
+  // what let the curator believe it had progressed while the queue stood still.
+  await assert.rejects(engine.done({ unit: { kind: 'promote', ref: first.unit.ref } }), error => error.code === 'UNIT_MISMATCH')
+
+  await engine.done({ unit: { kind: 'skill-suspect', ref: first.unit.ref } })
+  const end = await engine.next({ charsLeft: 0, sessionsLeft: 0 })
+  assert.equal(end.done, true, 'the run reaches done')
+  assert.ok(store.graph.get('lastRun') !== undefined, 'and records itself, so the page shows the run')
   store.close(); rmSync(root, { recursive: true, force: true })
 })

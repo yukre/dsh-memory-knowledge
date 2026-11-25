@@ -481,7 +481,7 @@ test('the curator reports skill duplicates and records them as raised', async ()
   const root = mkdtempSync(join(tmpdir(), 'mk-suspect-'))
   const skillsDir = join(root, 'skills')
   mkdirSync(join(skillsDir, 'demo'), { recursive: true })
-  writeFileSync(join(skillsDir, 'demo', 'SKILL.md'), '---\nname: demo\ndescription: "定价口径的唯一真源"\n---\n\n# 定价说人话\n\n正文\n')
+  writeFileSync(join(skillsDir, 'demo', 'SKILL.md'), '---\nname: demo\ndescription: "定价口径的唯一真源"\n---\n\n# 定价说人话\n\n报价口径要统一，不要一处一个说法；同一客户的数字只认一份。\n')
 
   const store = new Store(resolveConfig({ memoryRoot: join(root, 'mk'), skills: { linkTargets: [skillsDir] } }), { now: () => Date.now() })
   await store.open()
@@ -755,4 +755,20 @@ test('the change view renders stored Markdown as prose, not as source', async ()
   assert.ok(find(diff, n => /dmk-line-del/.test(n.props.className ?? '')).some(n => textOf(n).includes('删掉的一行')), 'a removed line is marked as removed, not as a bullet')
   assert.ok(find(diff, n => /dmk-line-add/.test(n.props.className ?? '')).some(n => textOf(n).includes('新增的一行')))
   void React
+})
+
+test('a shared word with a skill description is not reported as a duplicate', async () => {
+  const { skillAffinity } = await import('../lib/gate.js')
+  // Real cases from the 2026-11-25 library, all reported by the old phrase
+  // match, none a duplicate: one common word in the skill's description.
+  const wecom = { name: 'wecom-unified', description: '企业微信全能套件，搜索、重命名和授权文档，新建与读写 doc 在线文档', body: '# 企业微信套件\n\n通讯录、文档、日程。' }
+  const ppt = { name: 'ppt-craft-master', description: 'PPT生成助手，产出排版精致、绝不溢出的演示文稿', body: '# PPT 生成\n\n版式库与金句。' }
+  assert.equal(skillAffinity('按现有 pptx 模板生成 PPT：add_slide 继承不了模板形状，用纯 zipfile 重命名组装', wecom), undefined)
+  assert.equal(skillAffinity('滚动式 HTML 演示文稿别给 slide 加 aspect-ratio，否则绝不会自适应', ppt), undefined)
+
+  // A rule that is in the skill, reworded only at the edges, is reported.
+  const copy = { name: 'plain-tech-copy', description: '技术文案说人话', body: '# 技术文案说人话\n\n说人话的意思是陈述清楚、主语明确、不端着也不装随意，不是变得口语化。' }
+  const signal = skillAffinity('说人话：陈述清楚、主语明确、不端着也不装随意，不是变得口语化', copy)
+  assert.ok(signal !== undefined, 'the duplicate is reported')
+  assert.match(signal.reason, /最长相同片段/)
 })
