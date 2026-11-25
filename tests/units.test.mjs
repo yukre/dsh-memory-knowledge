@@ -182,3 +182,20 @@ test('an evidence quote matches whether or not it carries Markdown emphasis', as
   await assert.rejects(checkEvidence([{ kind: 'session', sessionId: 's', seq: 1, quote: '结论：先加仓' }], lookup),
     error => error.code === 'EVIDENCE_NOT_FOUND')
 })
+
+test('looking up a missing id returns nothing instead of throwing', async () => {
+  const { openGraph } = await import('../lib/graph.js')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'mk-graph-'))
+  const graph = await openGraph(join(dir, 'g.sqlite'))
+  // Changelog records for tasks and imports carry no `item`; relation targets and
+  // user-supplied ids can be absent too. SQLite refuses to bind undefined, so any
+  // reader that passed one through crashed instead of treating it as "no item".
+  for (const missing of [undefined, null, '', 42]) {
+    assert.equal(graph.item(missing), undefined, `item(${String(missing)})`)
+    assert.doesNotThrow(() => graph.canonical(missing))
+  }
+  graph.close(); rmSync(dir, { recursive: true, force: true })
+})
