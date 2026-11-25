@@ -720,19 +720,37 @@ test('the change history reports an undo as what it undid, and never claims a mi
   store.close(); rmSync(root, { recursive: true, force: true })
 })
 
-test('the diff view mutes Markdown syntax instead of showing it raw', async () => {
+test('the change view renders stored Markdown as prose, not as source', async () => {
+  const React = await import('react').catch(() => null)
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const pick = name => src.match(new RegExp(`    function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}`))[0]
+  // A minimal element factory: enough to walk the tree the real one would build.
+  const h = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) })
+  const DiffText = new Function('h', [pick('inlineMarkdown'), pick('blockOf'), pick('DiffText')].join('\n') + '\nreturn DiffText')(h)
+  const textOf = node => typeof node === 'string' ? node : (node.children ?? []).map(textOf).join('')
+  const find = (node, pred, out = []) => { if (typeof node !== 'string') { if (pred(node)) out.push(node); for (const c of node.children ?? []) find(c, pred, out) } return out }
 
-  // Items are stored as Markdown. Rendering them verbatim in a pre block made
-  // 「**结论**：…」 the first thing the eye hit on every change.
-  assert.match(src, /function markdownLine\(/, 'lines are decorated before display')
-  assert.match(src, /dmk-md-mark/, 'the syntax markers get their own class')
-  assert.match(src, /dmk-md-rule/, 'horizontal rules too')
-  assert.match(src, /\.dmk-md-mark\{opacity:\.35\}/, 'and the class is styled, not just applied')
+  // An add shows the whole stored body.
+  const added = DiffText({ text: '（新增时的全文）\n# 标题行\n> 何时用：做预算时\n\n**结论**：按三年摊销\n- 列表项' })
+  const shown = textOf(added)
+  assert.equal(shown.includes('**'), false, 'bold markers are consumed, not printed')
+  assert.equal(/(^|\n)#\s/.test(shown), false, 'heading hashes are consumed')
+  assert.equal(shown.includes('> '), false, 'quote markers are consumed')
+  assert.ok(find(added, n => n.type === 'b').some(n => textOf(n) === '结论'), '「结论」 renders bold')
+  assert.ok(find(added, n => /dmk-md-h/.test(n.props.className ?? '')).length === 1, 'the heading line is styled')
+  assert.ok(shown.includes('• 列表项'), 'a bullet renders as a dot')
 
-  // The characters stay in the output: a diff that silently reformatted its own
-  // source would no longer match the file it claims to describe.
-  assert.ok(src.includes('(\\*\\*|__|`)'), 'emphasis delimiters are still matched, only dimmed')
-  assert.match(src, /DiffText/, 'the change marks keep their own rendering path')
+  // An update is a line diff: each line starts with a two-character marker.
+  // Left in, `- 一行` is a removed line that reads as a bullet and every edited
+  // line starts with a stray `~`. The marker must be consumed first.
+  const diff = DiffText({ text: '…\n  **结论**：不变\n~ **为什么**：理由[-旧-]{+新+}\n- 删掉的一行\n+ 新增的一行' })
+  const diffText = textOf(diff)
+  assert.equal(diffText.includes('**'), false)
+  assert.equal(/(^|\n)~ /.test(diffText), false, 'the edit marker is not shown')
+  assert.ok(find(diff, n => n.type === 'del').some(n => textOf(n) === '旧'), 'inline removal is struck through')
+  assert.ok(find(diff, n => n.type === 'ins').some(n => textOf(n) === '新'), 'inline addition is highlighted')
+  assert.ok(find(diff, n => /dmk-line-del/.test(n.props.className ?? '')).some(n => textOf(n).includes('删掉的一行')), 'a removed line is marked as removed, not as a bullet')
+  assert.ok(find(diff, n => /dmk-line-add/.test(n.props.className ?? '')).some(n => textOf(n).includes('新增的一行')))
+  void React
 })
