@@ -506,16 +506,20 @@ test('prompt: an empty index shows a fixed pointer, never live counts', () => {
   assert.equal(render(), text, 'byte-identical across calls')
 })
 
-test('prompt: a populated index lists areas and preferences instead of the pointer', () => {
-  const text = snapshotText({
-    tag: 'dmk', root: '/r',
+test('prompt: the snapshot carries rules only, never library content', () => {
+  const render = input => snapshotText({ tag: 'dmk', root: '/r', subagent: false, ...input })
+  const empty = render({ areas: [], preferences: [] })
+  const full = render({
     areas: [{ area: 'cloudbase', description: '云开发', count: 3 }],
     preferences: [{ title: '结论前置', claim: '先说结论' }],
-    directoryMaxChars: 400, profileMaxChars: 600, subagent: false,
   })
-  assert.match(text, /- cloudbase：云开发/)
-  assert.match(text, /- 结论前置 —— 先说结论/)
-  assert.doesNotMatch(text, /固定路标/)
+  // Categories and preferences change with the library. Embedded in a snapshot
+  // that is frozen for the session, they were either stale (a session opened
+  // before a promotion never saw it) or would bust the prompt cache. The list is
+  // one mk_recall away.
+  assert.equal(full, empty, 'library content does not reach the snapshot')
+  assert.doesNotMatch(full, /cloudbase|结论前置|分类目录|长期偏好/)
+  assert.match(full, /都不给则列出全部分类和条数/, 'it says how to get the live list')
 })
 
 test('prompt: a hostile tag cannot break out of the wrapper', () => {

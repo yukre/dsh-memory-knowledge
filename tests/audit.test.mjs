@@ -560,7 +560,7 @@ test('the interface says release, not archive, because expiry deletes', async ()
   assert.match(engine, /过期释放/)
 })
 
-test('the snapshot lists the categories that hold material, even before promotion', async () => {
+test('mk_recall without arguments lists every category, staging included, with counts per pool', async () => {
   const { Store } = await import('../lib/store.js')
   const { resolveConfig } = await import('../lib/config.js')
   const { snapshotText } = await import('../lib/prompt.js')
@@ -583,20 +583,22 @@ test('the snapshot lists the categories that hold material, even before promotio
   add('甲', '云开发相关的普通事实内容甲', 'cloudbase')
   add('乙', '金融分析相关的普通事实内容乙', 'finance')
 
-  // Nothing is promoted yet. A bare index of zero categories over a library that
-  // holds material reads as "nothing here", so the names are listed anyway.
-  assert.equal(store.graph.counts().memory, 0)
-  const areas = store.areas()
-  assert.deepEqual(areas.map(entry => entry.area).sort(), ['cloudbase', 'finance'])
+  // One item promoted. areas() then reports the memory pool alone, which is how
+  // "list every category" came back with a single name over a library of ten.
+  const promoted = store.graph.items({ pool: 'staging' }).find(row => row.area === 'cloudbase')
+  store.moveItem(promoted.id, 'memory')
+  add('丙', '云开发相关的普通事实内容丙', 'cloudbase')
 
-  const render = () => snapshotText({ tag: 'dmk', root, areas: store.areas(), preferences: [], directoryMaxChars: 400, profileMaxChars: 600, subagent: false })
-  const text = render()
-  assert.match(text, /- cloudbase/)
-  assert.match(text, /- finance/)
-  // Names only: a count would change the text whenever an item is added and cost
-  // the prompt cache on every request.
-  assert.equal(/\d+\s*条/.test(text.split('分类目录')[1].split('长期偏好')[0]), false, 'no live counts in the index')
-  assert.equal(render(), text, 'byte-identical across calls')
+  const { Engine } = await import('../lib/engine.js')
+  const engine = new Engine(store, {})
+  const listed = await engine.recall({})
+  assert.equal(listed.kind, 'areas')
+  const byArea = Object.fromEntries(listed.areas.map(entry => [entry.area, entry]))
+  assert.deepEqual(Object.keys(byArea).sort(), ['cloudbase', 'finance'], 'every category with material, not just the promoted one')
+  assert.equal(byArea.cloudbase.memory, 1)
+  assert.equal(byArea.cloudbase.staging, 1)
+  assert.equal(byArea.finance.memory, 0)
+  assert.equal(byArea.finance.staging, 1)
 
   store.close(); rmSync(root, { recursive: true, force: true })
 })

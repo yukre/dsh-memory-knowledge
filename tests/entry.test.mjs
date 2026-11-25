@@ -282,10 +282,12 @@ test('a reload re-registers the same snapshot bytes; running sessions are left a
   assert.ok(again, 'the session that had a snapshot gets it back')
   assert.equal(again.text(), before, 'byte-identical across reload')
   assert.equal(reloaded.sections.some(section => section.agent === 's-never'), false, 'a session that never had one is not changed mid-flight')
-  // A brand-new session after reload sees the new category.
+  // A brand-new session gets the same bytes too: the snapshot carries rules
+  // only, so a growing library never changes it. Categories are listed live by
+  // mk_recall instead.
   const fresh = makeAgent(reloaded, { id: 's-new', cwd: '/tmp/mk-acceptance' })
   await reloaded.ctx.emit('agent/created', { agent: fresh })
-  assert.match(reloaded.sections.find(section => section.agent === 's-new').text(), /finance/)
+  assert.equal(reloaded.sections.find(section => section.agent === 's-new').text(), before, 'the library is not in the snapshot')
 })
 
 test('a lost task id adopts the existing task instead of creating a duplicate', async () => {
