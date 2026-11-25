@@ -154,3 +154,14 @@ test('search: question framing does not outrank the subject', () => {
   assert.equal(stripQuestionWords('为什么'), '为什么')
   assert.equal(stripQuestionWords('？'), '？')
 })
+
+test('the snapshot tells the agent to recall whenever past conclusions might apply', async () => {
+  const { snapshotText } = await import('../lib/prompt.js')
+  const text = snapshotText({ tag: 'dmk', root: '/r', areas: [], preferences: [], directoryMaxChars: 400, profileMaxChars: 600, subagent: false })
+  // The trigger used to be a closed list (客户/产品/项目/人名), so a question about
+  // a reporting rule or a calculation method — no proper noun in it — never
+  // prompted a lookup. The list is now examples of a broader rule.
+  assert.match(text, /过往结论、口径、做法或偏好/, 'the trigger is the kind of knowledge, not a fixed noun list')
+  assert.match(text, /例如提到客户、产品、项目、人名/, 'the old triggers remain as examples')
+  assert.match(text, /拿不准要不要查时，查/, 'ties break toward looking')
+})
