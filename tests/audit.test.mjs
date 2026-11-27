@@ -798,3 +798,35 @@ test('the settings cards count each item once and count every pending hand edit'
   assert.equal(status.counts.memory, 3, 'the skill is not also counted as a memory item')
   store.close(); rmSync(root, { recursive: true, force: true })
 })
+
+test('recall with no arguments counts each pool separately, even when a category has both', async () => {
+  const { Store } = await import('../lib/store.js')
+  const { Engine } = await import('../lib/engine.js')
+  const { resolveConfig } = await import('../lib/config.js')
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'mk-cat-'))
+  const store = new Store(resolveConfig({ memoryRoot: root }), { now: () => Date.now() })
+  await store.open()
+  const note = join(root, 'n.md'); writeFileSync(note, '一条足够长的依据原话用于校验\n')
+  const engine = new Engine(store, {})
+  const add = (area, title) => store.writeItem({
+    id: `mk_${Math.random().toString(36).slice(2, 12)}`,
+    path: join(root, `library/_staging/${area}/${title}.md`),
+    pool: 'staging', area, kind: 'fact', status: 'active', title, whenuse: 'x',
+    fingerprint: 'x', machine_fingerprint: 'x', created_at: Date.now(), updated_at: Date.now(),
+    human_at: null, source_sessions: [], confirmed: false, last_loaded: null,
+  }, { title, when: 'x', body: '**结论**：内容\n\n**为什么**：理由够长\n\n**边界**：无\n' })
+  add('cloudbase', '甲'); add('cloudbase', '乙'); add('finance', '丙')
+  // Promote exactly one, so cloudbase holds one of each and finance only staging.
+  const one = store.graph.items({ pool: 'staging' }).find(r => r.area === 'cloudbase')
+  store.moveItem(one.id, 'memory')
+  const listed = await engine.recall({})
+  const by = Object.fromEntries(listed.areas.map(a => [a.area, a]))
+  assert.equal(by.cloudbase.memory, 1, 'promoted item counted in memory')
+  assert.equal(by.cloudbase.staging, 1, 'remaining item counted in staging')
+  assert.equal(by.finance.memory, 0, 'a category with nothing promoted reports 0, not absent')
+  assert.equal(by.finance.staging, 1)
+  store.close(); rmSync(root, { recursive: true, force: true })
+})
