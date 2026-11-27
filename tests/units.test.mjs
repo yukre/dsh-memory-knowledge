@@ -161,9 +161,15 @@ test('the snapshot tells the agent to recall whenever past conclusions might app
   // The trigger used to be a closed list (客户/产品/项目/人名), so a question about
   // a reporting rule or a calculation method — no proper noun in it — never
   // prompted a lookup. The list is now examples of a broader rule.
-  assert.match(text, /过往结论、口径、做法或偏好/, 'the trigger is the kind of knowledge, not a fixed noun list')
-  assert.match(text, /例如提到客户、产品、项目、人名/, 'the old triggers remain as examples')
-  assert.match(text, /拿不准要不要查时，查/, 'ties break toward looking')
+  // The trigger used to be a judgement ("does this concern past conclusions?"),
+  // which the agent cannot make: it does not know what the library holds. It is
+  // now a set of literal cues plus a default of looking.
+  assert.match(text, /默认就是查/, 'looking is the default, not a decision')
+  for (const cue of ['跨会话转交', '历史口径', '沿用之前', '之前说过', '我们讨论过']) {
+    assert.ok(text.includes(cue), `a literal cue is listed: ${cue}`)
+  }
+  assert.match(text, /本次会话聊过也要查/, 'a topic already discussed in this session still warrants a lookup')
+  assert.match(text, /可以不查；其余拿不准的一律查/, 'ties break toward looking')
 })
 
 test('an evidence quote matches whether or not it carries Markdown emphasis', async () => {
