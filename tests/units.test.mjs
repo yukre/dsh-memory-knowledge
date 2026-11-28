@@ -205,3 +205,20 @@ test('looking up a missing id returns nothing instead of throwing', async () => 
   }
   graph.close(); rmSync(dir, { recursive: true, force: true })
 })
+
+test('the curator is asked to review where a stored rule would have saved the turn', async () => {
+  const { curatorProtocol } = await import('../lib/prompt.js')
+  const text = curatorProtocol({ extra: '' })
+  // The run already ends with a summary of what it wrote. The person also wants
+  // to know where the library would have helped and was not consulted: that is
+  // the only signal that says whether the memory is earning its keep.
+  assert.match(text, /记忆该用没用的地方/, 'the review is a required part of the summary')
+  assert.match(text, /只列漏用，不列用对的/, 'only misses, by explicit request')
+  for (const shape of ['别的会话里已经有结论', '库里已经有一条规则写着同样的话', '按之前的来', '走了弯路']) {
+    assert.ok(text.includes(shape), `names the shape of a miss: ${shape}`)
+  }
+  assert.match(text, /最多 5 条/, 'bounded, so the report stays actionable')
+  assert.match(text, /漏了：\[条目 id\]/, 'each miss names the item it should have used')
+  assert.match(text, /把握：高 \/ 中/, 'each miss states its own confidence')
+  assert.match(text, /不要凑数/, 'an empty result is stated, not padded')
+})
